@@ -150,10 +150,6 @@ Does **not** apply to Flow Designer flows — those use a different storage mode
 
 ---
 
-## Changelog
+## Note
 
-- **v9 (2026-06-04)**: Added RITM support — pass a RITM number (e.g. `RITM0043257`) or `sc_req_item` sys_id. Extracts record details, catalog variables, activity log / journal, approval history, and all associated workflow contexts.
-- **v8 (2026-06-04)**: Added recursive sub-workflow extraction. "Workflow" activities are followed automatically (up to 10 levels deep, with loop detection). Also added `sc_req_item` auto-detection for sys_ids.
-- **v7 (2026-04-09)**: Added context mode — extract executed/running workflows from "Show Workflow" (wf_context). Extracts execution state, timing, per-activity results, faults, scratchpad, and the triggering record. Auto-detects sys_id type (no need to set MODE manually).
-- **v6 (2026-03-23)**: First working version. Discovered that scripts live in `sys_variable_value`, not on `wf_activity` child tables (there are none).
-- **v1–v5**: Iterative discovery. Tried child table enumeration, field brute-force, browser console approaches. All failed because SN uses EAV storage for workflow activity config.
+*This repo is 100% AI generated.*
