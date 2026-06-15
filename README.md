@@ -1,8 +1,8 @@
 # SN Workflow Analyser
 
-A toolkit of ServiceNow Background Scripts that extract workflows, business rules, and email diagnostics into plain text — ready to paste into an AI for instant analysis.
+A toolkit of ServiceNow Background Scripts that extract workflows, business rules, and email diagnostics into plain text — ready to paste into an AI for analysis.
 
-All scripts run in **Scripts - Background** (`/sys.scripts.do`). No plugins, no apps, no scoped installs.
+All scripts run in **Scripts - Background** (`/sys.scripts.do`).
 
 ---
 
