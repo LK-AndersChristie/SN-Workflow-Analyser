@@ -668,27 +668,31 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
     // Look up sa_pattern records for these activity definitions
     if (actDefIds.length > 0) {
-        // Method 1: sa_pattern linked directly via activity_definition field
         var patternToActDef = {};  // pattern sys_id → actdef sys_id
         var orchMetaByActDef = {};  // actdef sys_id → {midServer, credential}
-        for (var pbi = 0; pbi < actDefIds.length; pbi += batchSize) {
-            var pBatch = actDefIds.slice(pbi, pbi + batchSize);
-            var grPat = new GlideRecord('sa_pattern');
-            grPat.addQuery('activity_definition', 'IN', pBatch.join(','));
-            grPat.query();
-            while (grPat.next()) {
-                var patId = grPat.getUniqueValue();
-                var patActDef = grPat.getValue('activity_definition');
-                patternToActDef[patId] = patActDef;
-                // Capture MID server and credential info from the pattern
-                orchMetaByActDef[patActDef] = {
-                    midServer:  grPat.getDisplayValue('mid_server') || grPat.getValue('mid_server') || '',
-                    credential: grPat.getDisplayValue('credential') || grPat.getValue('credential') || ''
-                };
+
+        // Check if sa_pattern table exists before querying
+        var saPatternExists = new GlideRecord('sa_pattern').isValid();
+        if (saPatternExists) {
+            for (var pbi = 0; pbi < actDefIds.length; pbi += batchSize) {
+                var pBatch = actDefIds.slice(pbi, pbi + batchSize);
+                var grPat = new GlideRecord('sa_pattern');
+                grPat.addQuery('activity_definition', 'IN', pBatch.join(','));
+                grPat.query();
+                while (grPat.next()) {
+                    var patId = grPat.getUniqueValue();
+                    var patActDef = grPat.getValue('activity_definition');
+                    patternToActDef[patId] = patActDef;
+                    // Capture MID server and credential info from the pattern
+                    orchMetaByActDef[patActDef] = {
+                        midServer:  grPat.getDisplayValue('mid_server') || grPat.getValue('mid_server') || '',
+                        credential: grPat.getDisplayValue('credential') || grPat.getValue('credential') || ''
+                    };
+                }
             }
         }
 
-        // Also check wf_activity_definition for MID server / credential alias
+        // Check wf_activity_definition for MID server / credential alias / category
         for (var adbi = 0; adbi < actDefIds.length; adbi += batchSize) {
             var adBatch = actDefIds.slice(adbi, adbi + batchSize);
             var grActDef = new GlideRecord('wf_activity_definition');
@@ -709,13 +713,14 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             }
         }
 
-        // Get steps for all found patterns
+        // Get steps for all found patterns (only if sa_step table exists)
+        var saStepExists = new GlideRecord('sa_step').isValid();
         var patternIds = [];
         for (var pk in patternToActDef) {
             if (patternToActDef.hasOwnProperty(pk)) patternIds.push(pk);
         }
 
-        if (patternIds.length > 0) {
+        if (saStepExists && patternIds.length > 0) {
             for (var sbi = 0; sbi < patternIds.length; sbi += batchSize) {
                 var sBatch = patternIds.slice(sbi, sbi + batchSize);
                 var grStep = new GlideRecord('sa_step');
@@ -743,6 +748,11 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                     }
                 }
             }
+        }
+
+        if (!saPatternExists) {
+            p('\nNOTE: sa_pattern table not found — orchestration scripts cannot be extracted.');
+            p('  The Service Automation plugin may not be active, or scripts are stored differently.');
         }
     }
 
@@ -855,6 +865,75 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         }
 
         p('');
+    }
+
+    // ── 5b. Extract referenced Script Includes ─────────────
+    //    Scan all activity scripts for "new ClassName()" patterns
+    //    and extract the full source from sys_script_include.
+
+    var referencedScriptIncludes = {};  // name → true (dedup)
+
+    // Collect all script text from activity variables
+    for (var sci = 0; sci < actList.length; sci++) {
+        var scVars = valuesByActivity[actList[sci].sys_id];
+        if (!scVars) continue;
+        for (var scv = 0; scv < scVars.length; scv++) {
+            var scVal = scVars[scv].value || '';
+            if (!scVal) continue;
+            // Match "new ClassName(" patterns — captures the class name
+            var newPattern = /new\s+([A-Z][A-Za-z0-9_]+)\s*\(/g;
+            var match;
+            while ((match = newPattern.exec(scVal)) !== null) {
+                var className = match[1];
+                // Skip standard ServiceNow/JS classes that aren't custom Script Includes
+                if (className === 'GlideRecord' || className === 'GlideDateTime' ||
+                    className === 'GlideAggregate' || className === 'GlideDuration' ||
+                    className === 'GlideFilter' || className === 'GlideSysAttachment' ||
+                    className === 'GlideElement' || className === 'GlideSession' ||
+                    className === 'GlideSchedule' || className === 'GlideUser' ||
+                    className === 'GlideUpdateManager' || className === 'GlideappCalculationHelper' ||
+                    className === 'ArrayUtil' || className === 'JSON' || className === 'Array' ||
+                    className === 'Date' || className === 'RegExp' || className === 'Error' ||
+                    className === 'Object' || className === 'String' || className === 'Number') {
+                    continue;
+                }
+                referencedScriptIncludes[className] = true;
+            }
+        }
+    }
+
+    // Look up and print each Script Include (only at depth 0 to avoid duplication)
+    if (depth === 0) {
+        var siNames = [];
+        for (var siName in referencedScriptIncludes) {
+            if (referencedScriptIncludes.hasOwnProperty(siName)) siNames.push(siName);
+        }
+
+        if (siNames.length > 0) {
+            p(section('REFERENCED SCRIPT INCLUDES (' + siNames.length + ')'));
+            for (var sii = 0; sii < siNames.length; sii++) {
+                var siLookupName = siNames[sii];
+                var grSI = new GlideRecord('sys_script_include');
+                grSI.addQuery('name', siLookupName);
+                grSI.setLimit(1);
+                grSI.query();
+                if (grSI.next()) {
+                    p(subsection('Script Include: ' + siLookupName));
+                    p('sys_id: ' + grSI.getUniqueValue());
+                    p('API Name: ' + (grSI.getValue('api_name') || ''));
+                    p('Scope: ' + (grSI.getDisplayValue('sys_scope') || 'Global'));
+                    p('Active: ' + grSI.getValue('active'));
+                    if (grSI.getValue('description')) p('Description: ' + grSI.getValue('description'));
+                    p('\nSCRIPT:');
+                    p(grSI.getValue('script'));
+                    p('');
+                } else {
+                    p(subsection('Script Include: ' + siLookupName));
+                    p('(not found in sys_script_include — may be a scoped app or platform class)');
+                    p('');
+                }
+            }
+        }
     }
 
     // ── Per-workflow summary ─────────────────────────────────
