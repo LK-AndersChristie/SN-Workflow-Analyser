@@ -1,6 +1,6 @@
 # SN Workflow Analyser
 
-A toolkit of ServiceNow Background Scripts that extract workflows, business rules, and email diagnostics into plain text — ready to paste into an AI for analysis.
+A toolkit of ServiceNow Background Scripts that extract workflows, business rules, and email diagnostics into plain text, ready to paste into an AI for analysis.
 
 All scripts run in **Scripts - Background** (`/sys.scripts.do`).
 
@@ -15,8 +15,10 @@ All scripts run in **Scripts - Background** (`/sys.scripts.do`).
 - Auto-detects input type — pass a RITM number, any sys_id, or a workflow version and it figures out the rest
 - Extracts all scripts, conditions, Set Values mappings, transitions, and orchestration inputs
 - Includes execution history with per-activity timing, results, and faults
+- Extracts orchestration scripts (PowerShell/SSH from `sa_step`) that run on the MID Server
+- Shows MID Server and credential alias per orchestration activity
 - Follows sub-workflows recursively (up to 10 levels deep)
-- For RITMs: also extracts catalog variables, journal entries, and approval history
+- For RITMs: also extracts catalog variables, journal entries, approval history, catalog tasks, emails/notifications, and attachments
 
 **Supported inputs:**
 

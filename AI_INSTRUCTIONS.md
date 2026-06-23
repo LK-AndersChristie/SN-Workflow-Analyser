@@ -25,12 +25,16 @@ Contents:
 - **RITM variables** *(RITM mode only)* — all catalog variable name/value pairs from the request
 - **Activity log / journal** *(RITM mode only)* — all journal entries (work notes, comments, orchestration messages) in chronological order
 - **Approval history** *(RITM mode only)* — approver, state, comments, timestamps
+- **Catalog tasks** *(RITM mode only)* — all `sc_task` child tasks with state, assignments, work notes, and their variables
+- **Emails / Notifications** *(RITM mode only)* — emails sent for the RITM (type, subject, recipients, mailbox, notification name)
+- **Attachments** *(RITM mode only)* — files attached to the RITM (names, sizes, content types)
 - **Workflow contexts** *(RITM mode only)* — list of all `wf_context` records for the RITM, each extracted in full
 - **Execution context** *(context/RITM mode)* — overall state (Executing/Finished/Cancelled), start/end times, the triggering record, and scratchpad
 - **Workflow metadata** — name, table it runs on (e.g., `sc_req_item`), scope, description
+- **Workflow stages** — ordered stage definitions (names and values) for the workflow version
 - **Activity index** — numbered list of all nodes sorted by canvas position
 - **Transitions** — every connection between nodes, with condition labels (`Always`, `Yes`, `No`, `Success`, `Failure`, `Policy Failure`)
-- **Activity details** — for each node: type, sys_id, position, stage, all configuration content, and execution data (if context/RITM mode)
+- **Activity details** — for each node: type, sys_id, position, stage, all configuration content, execution data (if context/RITM mode), orchestration config (MID server, credential alias, category), and orchestration scripts (PowerShell/SSH steps from `sa_step`)
 
 ## Output format
 
@@ -76,6 +80,34 @@ APPROVAL HISTORY
   ...
 
 ------------------------------------------------------------
+CATALOG TASKS
+------------------------------------------------------------
+  Task: SCTASK0012345
+  Short description: ...
+  State: Closed Complete
+  Assigned to: ...
+  Assignment group: ...
+  ...
+
+------------------------------------------------------------
+EMAILS / NOTIFICATIONS
+------------------------------------------------------------
+  Type: send-ready
+  Subject: Your request has been approved
+  Recipients: user@example.com
+  Mailbox: (default)
+  Notification: RITM Approved Notification
+  ...
+
+------------------------------------------------------------
+ATTACHMENTS
+------------------------------------------------------------
+  File: document.pdf
+  Size: 12345 bytes
+  Content type: application/pdf
+  ...
+
+------------------------------------------------------------
 WORKFLOW CONTEXTS FOR RITM0043257
 ------------------------------------------------------------
   Context: xxx  State: Finished  Workflow: Workflow Name
@@ -106,6 +138,13 @@ SCRATCHPAD (final state):
 WORKFLOW DEFINITION
 ================================================================================
 ...
+
+------------------------------------------------------------
+WORKFLOW STAGES
+------------------------------------------------------------
+  1. Fulfillment (value: fulfillment)
+  2. Delivery (value: delivery)
+  ...
 
 ================================================================================
 ACTIVITY INDEX (N activities)
@@ -140,6 +179,24 @@ EXECUTION:  (context mode only)
 
 INPUT (orchestration):
 {JSON input map}
+
+ORCHESTRATION CONFIG:
+  MID Server: pai-mid02.ads.example.no
+  Credential: Exchange Online Service Account
+  Category: PowerShell
+
+ORCHESTRATION STEPS (2):
+  Step 1: Connect to Exchange
+  Script type: PowerShell
+  Inputs: ...
+  ---- SCRIPT START ----
+  (full PowerShell script content)
+  ---- SCRIPT END ----
+  Outputs: ...
+
+  Step 2: Set Regional Settings
+  Script type: PowerShell
+  ...
 
 SCRIPT:
 (full script content)
@@ -202,7 +259,7 @@ If an activity has **two outbound transitions to the same target** (e.g., both S
 | **Begin** | Workflow entry point | No config |
 | **End** | Workflow exit point | No config |
 | **Log Message** | Writes to system log | `MESSAGE:` |
-| **Orchestration activities** (Deprovision, Update AD Object, Reset AD User Password, etc.) | Runs PowerShell/commands via MID server | `INPUT (orchestration):` JSON with parameter mappings |
+| **Orchestration activities** (Deprovision, Update AD Object, Reset AD User Password, etc.) | Runs PowerShell/commands via MID server | `INPUT (orchestration):` JSON with parameter mappings, `ORCHESTRATION CONFIG:` (MID server, credential), `ORCHESTRATION STEPS:` (full PowerShell/SSH scripts) |
 
 ### Step 3: Understand script patterns
 
@@ -215,12 +272,15 @@ If an activity has **two outbound transitions to the same target** (e.g., both S
 
 **Set Values** use encoded query format: `state=2^assignment_group=xxx^EQ`
 
-### Step 4: Check for orchestration gaps
+### Step 4: Check orchestration activities
 
-Orchestration activities (PowerShell, AD operations) show only their **INPUT JSON** in the export. The actual execution script, post-processing script, outputs, and conditions are stored on the **activity definition** (template), not the activity instance.
+Orchestration activities (PowerShell, AD operations) now include:
+- **INPUT** — the JSON parameter map with variable substitutions
+- **ORCHESTRATION CONFIG** — which MID server and credential alias the activity uses
+- **ORCHESTRATION STEPS** — the full script content (PowerShell, SSH, etc.) from `sa_step` records, including inputs, outputs, and conditions per step
 
-When you see an orchestration activity with just `INPUT (orchestration):`, tell the user:
-> "This is an orchestration activity. The export shows the input parameters, but the execution script (PowerShell), post-processing script, outputs, and conditions are stored on the activity definition template. If you need to review those, open the activity in the Workflow Editor → click the relevant tab → copy the content."
+If orchestration steps are empty for an activity, it means the activity definition's `sa_pattern` has no linked `sa_step` records — the script may be embedded differently (e.g., inline in a custom activity definition). In that case, tell the user:
+> "This orchestration activity has no sa_step scripts linked. The execution logic may be stored inline on the activity definition or use a different mechanism. Open the activity in the Workflow Editor → Execution Command tab to check."
 
 ### Step 5: Common things to look for
 
@@ -324,6 +384,13 @@ If a Value column is empty, that input is **not mapped** and the PowerShell vari
 - **`sys_variable_value`** — Generic EAV storage (where scripts/config live)
 - **`sys_journal_field`** — Journal/activity log entries (work notes, comments, etc.)
 - **`sysapproval_approver`** — Approval records
+- **`sc_task`** — Catalog Task (child tasks spawned by the workflow)
+- **`sys_email`** — Email records (notifications sent for a record)
+- **`sys_attachment`** — File attachments on a record
+- **`sa_pattern`** — Orchestration pattern (links activity definitions to script steps)
+- **`sa_step`** — Orchestration step (contains the actual PowerShell/SSH script executed on MID server)
+- **`wf_stage`** — Workflow stage definitions
+- **`wf_activity_definition`** — Activity definition template (MID server, credential, category)
 - **`workflow.scratchpad`** — Runtime key-value store shared across activities in a workflow execution
 - **`data.get(N)`** — Databus: access results from activity at positional index N
 - **`current`** — The record the workflow is running on

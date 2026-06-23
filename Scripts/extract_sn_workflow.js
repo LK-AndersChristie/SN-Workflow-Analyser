@@ -20,6 +20,8 @@
  * EXTRACTS: metadata, activities, transitions, scripts, conditions,
  *           Set Values mappings, orchestration inputs, timer config,
  *           Create Task config, and all other activity configuration.
+ *           Orchestration scripts (PowerShell/SSH/etc from sa_step)
+ *           that run on the MID Server are included per activity.
  *           For executed workflows: execution state, timing, activity
  *           results, faults, scratchpad, and the triggering record.
  *           Sub-workflows called by "Workflow" activities are extracted
@@ -157,6 +159,106 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             apprCount++;
         }
         if (apprCount === 0) p('  (no approvals found)');
+
+        // ── Catalog Tasks (sc_task) ──────────────────────────────
+        p(subsection('CATALOG TASKS'));
+        var grTask = new GlideRecord('sc_task');
+        grTask.addQuery('request_item', ritmSysId);
+        grTask.orderBy('sys_created_on');
+        grTask.query();
+        var taskCount = 0;
+        while (grTask.next()) {
+            var taskSysId = grTask.getUniqueValue();
+            p('  Task: ' + grTask.getValue('number'));
+            p('  Short description: ' + (grTask.getValue('short_description') || ''));
+            p('  State: ' + grTask.getDisplayValue('state'));
+            p('  Assigned to: ' + (grTask.getDisplayValue('assigned_to') || '(unassigned)'));
+            p('  Assignment group: ' + (grTask.getDisplayValue('assignment_group') || ''));
+            p('  Created: ' + grTask.getDisplayValue('sys_created_on'));
+            if (grTask.getValue('closed_at')) p('  Closed: ' + grTask.getDisplayValue('closed_at'));
+            if (grTask.getValue('work_notes')) p('  Work notes: ' + grTask.getValue('work_notes'));
+            if (grTask.getValue('close_notes')) p('  Close notes: ' + grTask.getValue('close_notes'));
+
+            // Catalog Task variables
+            var grTaskOpt = new GlideRecord('sc_item_option_mtom');
+            grTaskOpt.addQuery('request_item', ritmSysId);
+            grTaskOpt.query();
+            var taskVarFound = false;
+            while (grTaskOpt.next()) {
+                var taskOptRef = grTaskOpt.getValue('sc_item_option');
+                if (!taskOptRef) continue;
+                var grTaskOptVal = new GlideRecord('sc_item_option');
+                if (grTaskOptVal.get(taskOptRef)) {
+                    if (!taskVarFound) {
+                        p('  Variables:');
+                        taskVarFound = true;
+                    }
+                    var tOptName = grTaskOptVal.getDisplayValue('item_option_new') || grTaskOptVal.getValue('item_option_new') || '(unknown)';
+                    var tOptVal = grTaskOptVal.getValue('value') || '';
+                    p('    ' + tOptName + ': ' + tOptVal);
+                }
+            }
+            p('');
+            taskCount++;
+        }
+        if (taskCount === 0) p('  (no catalog tasks found)');
+
+        // ── Emails / Notifications sent ──────────────────────────
+        p(subsection('EMAILS / NOTIFICATIONS'));
+        var grEmail = new GlideRecord('sys_email');
+        grEmail.addQuery('instance', ritmSysId);
+        grEmail.orderBy('sys_created_on');
+        grEmail.query();
+        var emailCount = 0;
+        while (grEmail.next()) {
+            p('  Type: ' + grEmail.getDisplayValue('type'));
+            p('  Subject: ' + (grEmail.getValue('subject') || ''));
+            p('  Recipients: ' + (grEmail.getValue('recipients') || ''));
+            if (grEmail.getValue('copied')) p('  CC: ' + grEmail.getValue('copied'));
+            p('  Created: ' + grEmail.getDisplayValue('sys_created_on'));
+            p('  Mailbox: ' + (grEmail.getDisplayValue('mailbox') || '(default)'));
+            if (grEmail.getValue('notification')) p('  Notification: ' + grEmail.getDisplayValue('notification'));
+            p('');
+            emailCount++;
+        }
+        if (emailCount === 0) {
+            // Also try target_table + instance as some versions use different linking
+            var grEmail2 = new GlideRecord('sys_email');
+            grEmail2.addQuery('target_table', 'sc_req_item');
+            grEmail2.addQuery('instance', ritmSysId);
+            grEmail2.orderBy('sys_created_on');
+            grEmail2.query();
+            while (grEmail2.next()) {
+                p('  Type: ' + grEmail2.getDisplayValue('type'));
+                p('  Subject: ' + (grEmail2.getValue('subject') || ''));
+                p('  Recipients: ' + (grEmail2.getValue('recipients') || ''));
+                if (grEmail2.getValue('copied')) p('  CC: ' + grEmail2.getValue('copied'));
+                p('  Created: ' + grEmail2.getDisplayValue('sys_created_on'));
+                p('  Mailbox: ' + (grEmail2.getDisplayValue('mailbox') || '(default)'));
+                if (grEmail2.getValue('notification')) p('  Notification: ' + grEmail2.getDisplayValue('notification'));
+                p('');
+                emailCount++;
+            }
+            if (emailCount === 0) p('  (no emails found)');
+        }
+
+        // ── Attachments ──────────────────────────────────────────
+        p(subsection('ATTACHMENTS'));
+        var grAttach = new GlideRecord('sys_attachment');
+        grAttach.addQuery('table_name', 'sc_req_item');
+        grAttach.addQuery('table_sys_id', ritmSysId);
+        grAttach.orderBy('sys_created_on');
+        grAttach.query();
+        var attachCount = 0;
+        while (grAttach.next()) {
+            p('  File: ' + grAttach.getValue('file_name'));
+            p('  Size: ' + grAttach.getValue('size_bytes') + ' bytes');
+            p('  Content type: ' + (grAttach.getValue('content_type') || ''));
+            p('  Created: ' + grAttach.getDisplayValue('sys_created_on'));
+            p('');
+            attachCount++;
+        }
+        if (attachCount === 0) p('  (no attachments found)');
 
         // ── Find all wf_context records for this RITM ────────────
         p(subsection('WORKFLOW CONTEXTS FOR ' + ritmNumber));
@@ -409,6 +511,21 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
     p(ln('=', 80));
 
+    // ── 2a. Workflow Stages ──────────────────────────────────
+    var grStage = new GlideRecord('wf_stage');
+    grStage.addQuery('workflow_version', targetWfv);
+    grStage.orderBy('order');
+    grStage.query();
+    var stageCount = 0;
+    if (grStage.hasNext()) {
+        p(subsection('WORKFLOW STAGES'));
+        while (grStage.next()) {
+            stageCount++;
+            p('  ' + stageCount + '. ' + grStage.getValue('name') +
+              ' (value: ' + (grStage.getValue('value') || grStage.getValue('ov')) + ')');
+        }
+    }
+
     // ── 2b. Get all activities ───────────────────────────────
 
     var grAct = new GlideRecord('wf_activity');
@@ -528,6 +645,107 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         }
     }
 
+    // ── 4b. Get orchestration scripts (sa_step) for activities ──
+    //    Orchestration activities reference an activity_definition which
+    //    links to sa_pattern → sa_step containing the actual PowerShell/
+    //    SSH/script content executed on the MID Server.
+
+    var orchScriptsByActivity = {};  // keyed by wf_activity sys_id
+
+    // Collect unique activity_definition sys_ids
+    var actDefIds = [];
+    var actDefToActivities = {};  // actdef sys_id → [activity sys_ids]
+    for (var adi = 0; adi < actList.length; adi++) {
+        var adef = actList[adi].actdef;
+        if (adef) {
+            if (!actDefToActivities[adef]) {
+                actDefToActivities[adef] = [];
+                actDefIds.push(adef);
+            }
+            actDefToActivities[adef].push(actList[adi].sys_id);
+        }
+    }
+
+    // Look up sa_pattern records for these activity definitions
+    if (actDefIds.length > 0) {
+        // Method 1: sa_pattern linked directly via activity_definition field
+        var patternToActDef = {};  // pattern sys_id → actdef sys_id
+        var orchMetaByActDef = {};  // actdef sys_id → {midServer, credential}
+        for (var pbi = 0; pbi < actDefIds.length; pbi += batchSize) {
+            var pBatch = actDefIds.slice(pbi, pbi + batchSize);
+            var grPat = new GlideRecord('sa_pattern');
+            grPat.addQuery('activity_definition', 'IN', pBatch.join(','));
+            grPat.query();
+            while (grPat.next()) {
+                var patId = grPat.getUniqueValue();
+                var patActDef = grPat.getValue('activity_definition');
+                patternToActDef[patId] = patActDef;
+                // Capture MID server and credential info from the pattern
+                orchMetaByActDef[patActDef] = {
+                    midServer:  grPat.getDisplayValue('mid_server') || grPat.getValue('mid_server') || '',
+                    credential: grPat.getDisplayValue('credential') || grPat.getValue('credential') || ''
+                };
+            }
+        }
+
+        // Also check wf_activity_definition for MID server / credential alias
+        for (var adbi = 0; adbi < actDefIds.length; adbi += batchSize) {
+            var adBatch = actDefIds.slice(adbi, adbi + batchSize);
+            var grActDef = new GlideRecord('wf_activity_definition');
+            grActDef.addQuery('sys_id', 'IN', adBatch.join(','));
+            grActDef.query();
+            while (grActDef.next()) {
+                var adId = grActDef.getUniqueValue();
+                if (!orchMetaByActDef[adId]) orchMetaByActDef[adId] = {};
+                var existingMeta = orchMetaByActDef[adId];
+                // Pick up MID server selector and credential fields if present
+                if (!existingMeta.midServer) {
+                    existingMeta.midServer = grActDef.getDisplayValue('mid_server') || grActDef.getValue('mid_server') || '';
+                }
+                if (!existingMeta.credential) {
+                    existingMeta.credential = grActDef.getDisplayValue('credential') || grActDef.getValue('credential') || '';
+                }
+                existingMeta.category = grActDef.getDisplayValue('category') || '';
+            }
+        }
+
+        // Get steps for all found patterns
+        var patternIds = [];
+        for (var pk in patternToActDef) {
+            if (patternToActDef.hasOwnProperty(pk)) patternIds.push(pk);
+        }
+
+        if (patternIds.length > 0) {
+            for (var sbi = 0; sbi < patternIds.length; sbi += batchSize) {
+                var sBatch = patternIds.slice(sbi, sbi + batchSize);
+                var grStep = new GlideRecord('sa_step');
+                grStep.addQuery('pattern', 'IN', sBatch.join(','));
+                grStep.orderBy('order');
+                grStep.query();
+                while (grStep.next()) {
+                    var stepPatId = grStep.getValue('pattern');
+                    var stepActDef = patternToActDef[stepPatId];
+                    var stepData = {
+                        name:       grStep.getValue('name') || '',
+                        order:      grStep.getValue('order') || '',
+                        scriptType: grStep.getDisplayValue('script_type') || grStep.getValue('script_type') || '',
+                        script:     grStep.getValue('script') || '',
+                        inputs:     grStep.getValue('inputs') || '',
+                        outputs:    grStep.getValue('outputs') || '',
+                        condition:  grStep.getValue('condition') || ''
+                    };
+                    // Map to all activities using this activity_definition
+                    var relatedActs = actDefToActivities[stepActDef] || [];
+                    for (var ra = 0; ra < relatedActs.length; ra++) {
+                        var raId = relatedActs[ra];
+                        if (!orchScriptsByActivity[raId]) orchScriptsByActivity[raId] = [];
+                        orchScriptsByActivity[raId].push(stepData);
+                    }
+                }
+            }
+        }
+    }
+
     // ── 5. Activity details ──────────────────────────────────
 
     p(section('ACTIVITY DETAILS' + depthLabel));
@@ -595,6 +813,44 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         } else {
             if (!info.input || info.input === '{}') {
                 p('\n(no configuration found)');
+            }
+        }
+
+        // Orchestration metadata (MID server, credential, category)
+        var orchMeta = orchMetaByActDef[info.actdef];
+        if (orchMeta) {
+            var hasMeta = orchMeta.midServer || orchMeta.credential || orchMeta.category;
+            if (hasMeta) {
+                p('\nORCHESTRATION CONFIG:');
+                if (orchMeta.midServer) p('  MID Server: ' + orchMeta.midServer);
+                if (orchMeta.credential) p('  Credential: ' + orchMeta.credential);
+                if (orchMeta.category) p('  Category: ' + orchMeta.category);
+            }
+        }
+
+        // Orchestration scripts (sa_step) for this activity
+        var orchSteps = orchScriptsByActivity[info.sys_id];
+        if (orchSteps && orchSteps.length > 0) {
+            p('\nORCHESTRATION STEPS (' + orchSteps.length + '):');
+            for (var osi = 0; osi < orchSteps.length; osi++) {
+                var step = orchSteps[osi];
+                p('  Step ' + (step.order || (osi + 1)) + ': ' + (step.name || '(unnamed)'));
+                if (step.scriptType) p('  Script type: ' + step.scriptType);
+                if (step.condition) {
+                    p('  Condition: ' + step.condition);
+                }
+                if (step.inputs) {
+                    p('  Inputs: ' + step.inputs);
+                }
+                if (step.script) {
+                    p('  ---- SCRIPT START ----');
+                    p(step.script);
+                    p('  ---- SCRIPT END ----');
+                }
+                if (step.outputs) {
+                    p('  Outputs: ' + step.outputs);
+                }
+                p('');
             }
         }
 
