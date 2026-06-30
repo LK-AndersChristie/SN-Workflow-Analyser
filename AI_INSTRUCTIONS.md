@@ -6,14 +6,16 @@ These instructions are for AI agents (Copilot, ChatGPT, Claude, etc.) receiving 
 
 ## What you are receiving
 
-A **complete export** of a ServiceNow legacy workflow (Workflow Editor / `workflow_ide.do`), in one of three modes:
+A **complete export** of a ServiceNow legacy workflow (Workflow Editor / `workflow_ide.do`), plus supporting automation analysis (business rules, notifications, emails), in one of four modes:
 
-- **RITM mode** — a full RITM record export (details, variables, activity log, approvals) plus all workflow executions associated with that RITM
+- **RITM mode** — a full RITM record export (details, variables, activity log, approvals, tasks, emails, notifications, business rules, inbound email actions) plus all workflow executions associated with that RITM
+- **Incident mode** — a full Incident record export (details, variables, activity log, approvals, tasks, emails, notifications, business rules, inbound email actions) plus all workflow executions associated with that incident
 - **Context mode** — an executed workflow with definition + execution data (which activities ran, when, their results, faults, scratchpad state, and the triggering record)
 - **Definition mode** — a workflow template (activities, transitions, scripts, config) without execution data
 
 The mode is indicated in the header:
 - `SERVICENOW RITM + WORKFLOW EXPORT` — RITM mode
+- `SERVICENOW INCIDENT + WORKFLOW EXPORT` — Incident mode
 - `SERVICENOW WORKFLOW EXECUTION EXPORT` — context mode
 - `SERVICENOW WORKFLOW EXPORT` — definition mode
 
@@ -25,10 +27,18 @@ Contents:
 - **RITM variables** *(RITM mode only)* — all catalog variable name/value pairs from the request
 - **Activity log / journal** *(RITM mode only)* — all journal entries (work notes, comments, orchestration messages) in chronological order
 - **Approval history** *(RITM mode only)* — approver, state, comments, timestamps
+- **Incident tasks** *(Incident mode only)* — all `incident_task` child tasks with state, assignments, work notes
 - **Catalog tasks** *(RITM mode only)* — all `sc_task` child tasks with state, assignments, work notes, and their variables
-- **Emails / Notifications** *(RITM mode only)* — emails sent for the RITM (type, subject, recipients, mailbox, notification name)
-- **Attachments** *(RITM mode only)* — files attached to the RITM (names, sizes, content types)
-- **Workflow contexts** *(RITM mode only)* — list of all `wf_context` records for the RITM, each extracted in full
+- **Related changes** *(Incident mode only)* — all linked `change_request` records (for incidents)
+- **Emails sent** *(RITM & Incident mode only)* — all emails sent for the record with subject, recipients, CC, creation time
+- **Email watchers** *(RITM & Incident mode only)* — users subscribed to record updates via `sys_watchers`
+- **Notification definitions** *(RITM & Incident mode only)* — all active `sysevent_email_action` records showing when notifications fire, recipients, subjects, and message body content
+- **Business rules** *(RITM & Incident mode only)* — all active `sys_business_rule` records for the table showing when they fire, priorities, conditions, and full script content
+- **Inbound email actions** *(RITM & Incident mode only)* — all active `sysevent_in_email_action` records showing how incoming emails are processed on the table
+- **Email scripts/templates** *(RITM & Incident mode only)* — all `sys_email_script` records showing template content for email notifications
+- **Email correlation** *(RITM & Incident mode only)* — analysis showing which notification triggered each email sent (linking `sys_email` to `sysevent_email_action`)
+- **Attachments** *(RITM & Incident mode only)* — files attached to the record (names, sizes, content types)
+- **Workflow contexts** *(RITM & Incident mode only)* — list of all `wf_context` records, each extracted in full
 - **Execution context** *(context/RITM mode)* — overall state (Executing/Finished/Cancelled), start/end times, the triggering record, and scratchpad
 - **Workflow metadata** — name, table it runs on (e.g., `sc_req_item`), scope, description
 - **Workflow stages** — ordered stage definitions (names and values) for the workflow version
@@ -115,6 +125,155 @@ WORKFLOW CONTEXTS FOR RITM0043257
 
 ################################################################################
 WORKFLOW CONTEXT 1 OF N FOR RITM
+################################################################################
+(full workflow extraction follows — same format as context mode below)
+```
+
+### Incident mode header (when input is an INC number or incident sys_id)
+
+```
+================================================================================
+SERVICENOW INCIDENT + WORKFLOW EXPORT
+Extracted: 2026-06-04 10:08:52
+Detected type: Incident
+================================================================================
+
+================================================================================
+INCIDENT RECORD: INC0043257
+================================================================================
+sys_id: xxx
+Number: INC0043257
+Short description: ...
+Description: ...
+State: Assigned
+Priority: 2 - High
+Urgency: 2 - High
+Impact: 2 - Medium
+Caller: user@example.com
+Assigned to: support.team@example.com
+Assignment group: IT Support
+Category: Software
+Subcategory: Application Error
+Opened: 2026-06-04 09:50:00
+Resolved: ...
+Closed: ...
+
+WORK NOTES:
+(internal notes from support team)
+
+------------------------------------------------------------
+INCIDENT VARIABLES
+------------------------------------------------------------
+  Variable Name: value
+  ...
+
+------------------------------------------------------------
+ACTIVITY LOG / JOURNAL
+------------------------------------------------------------
+  [2026-06-04 09:50:17] (username) [work_notes]
+    Journal entry text...
+  ...
+
+------------------------------------------------------------
+APPROVAL HISTORY
+------------------------------------------------------------
+  Approver: ...
+  State: Approved
+  ...
+
+------------------------------------------------------------
+INCIDENT TASKS
+------------------------------------------------------------
+  Task: (task description)
+  State: Closed Complete
+  Assigned to: ...
+  ...
+
+------------------------------------------------------------
+RELATED CHANGES
+------------------------------------------------------------
+  CHG0001234 - Change description
+  State: Implemented
+  ...
+
+------------------------------------------------------------
+BUSINESS RULES FOR TABLE: incident
+------------------------------------------------------------
+  1. Auto-assign Incident
+     When: before insert
+     Priority: 100
+     Condition: (condition query)
+     ---- SCRIPT START ----
+     (GlideScript content)
+     ---- SCRIPT END ----
+
+  ...
+
+------------------------------------------------------------
+INBOUND EMAIL ACTIONS FOR TABLE: incident
+------------------------------------------------------------
+  1. Email Update Action
+     Active: true
+     Respond to sender: true
+     ---- SCRIPT START ----
+     (script content)
+     ---- SCRIPT END ----
+
+  ...
+
+------------------------------------------------------------
+NOTIFICATION DEFINITIONS FOR TABLE: incident
+------------------------------------------------------------
+  1. Incident Created
+     When: after insert
+     Condition: (filter condition)
+     Recipients: incident_manager
+     Subject: Incident {{number}} created
+     MESSAGE:
+     (message body with variables)
+
+  ...
+
+------------------------------------------------------------
+EMAIL SCRIPTS & TEMPLATES FOR TABLE: incident
+------------------------------------------------------------
+  1. Email Template Name
+     Description: Description of email
+     ---- CONTENT START ----
+     (email template content)
+     ---- CONTENT END ----
+
+  ...
+
+------------------------------------------------------------
+EMAIL & NOTIFICATION ANALYSIS FOR INC0043257
+------------------------------------------------------------
+
+EMAILS SENT:
+  1. Subject: Incident ticket opened
+     Created: 2026-06-04 09:50:17
+     Recipients: manager@example.com
+     CC: team@example.com
+     Triggered by notification: Incident Created
+       Notification name: Incident Created
+       Notification when: after insert
+     Body: (email body preview)
+
+  ...
+  Total emails sent: 3
+
+EMAIL WATCHERS/SUBSCRIBERS:
+  1. user1@example.com
+  2. user2@example.com
+
+------------------------------------------------------------
+WORKFLOW CONTEXTS FOR INC0043257
+------------------------------------------------------------
+  Context: xxx  State: Finished  Workflow: Workflow Name
+  ...
+
+################################################################################
+WORKFLOW CONTEXT 1 OF N FOR INCIDENT
 ################################################################################
 (full workflow extraction follows — same format as context mode below)
 ```
@@ -321,24 +480,83 @@ When the export includes execution data (context mode or RITM mode):
 - Check the scratchpad for unexpected values that may have caused downstream If-nodes to branch differently than expected
 - Look for activities that are still `[EXECUTING]` with old timestamps — these may be stuck (e.g., waiting for an approval that never came, or a timer that hasn't fired)
 
-### Step 7: Analyze RITM exports (RITM mode only)
+### Step 7: Analyze RITM/Incident exports
 
-When the export starts with `SERVICENOW RITM + WORKFLOW EXPORT`:
+When the export starts with `SERVICENOW RITM + WORKFLOW EXPORT` or `SERVICENOW INCIDENT + WORKFLOW EXPORT`:
 
-**RITM record section:**
-- **State** and **Stage** show where the RITM is in its lifecycle
-- **Approval** shows the current approval status
-- **Cat item** identifies which catalog item was ordered
+**Record details section (RITM or Incident):**
+- **RITM State/Stage/Approval** or **Incident State/Priority/Urgency** show where the request/incident is in its lifecycle
+- **Cat item** (RITM) identifies which catalog item was ordered
+- **Caller/Assigned to** show who created the record and who's working on it
 
-**RITM variables:**
-- These are the form values submitted by the requester
-- Variable names may be internal (`u_fornavn`) or display labels (`Etternavn`) depending on the catalog item configuration
+**Record variables (RITM) or form variables (Incident):**
+- These are the form values submitted by the requester or incident details
+- Variable names may be internal (`u_fornavn`) or display labels depending on configuration
 - Some values are sys_ids referencing other records (users, groups, locations)
 
 **Activity log / journal:**
 - Entries are chronological — useful for understanding what happened and when
 - `[work_notes]` entries are internal notes; `[comments]` are customer-visible
 - `[u_orchestration_notes]` and `[u_orchestration_error]` are written by workflow orchestration activities — these are the most important for debugging automation issues
+
+### Step 8: Analyze email, notification, and business rule configuration (RITM/Incident mode)
+
+When analyzing RITM or Incident exports, you also receive:
+
+**Business Rules section:**
+- Lists all **active** business rules for the table (`sc_req_item` or `incident`)
+- **When** field shows when the rule fires:
+  - `before insert` — executes before the record is created
+  - `after insert` — executes after the record is created
+  - `before update` — executes before an update is saved
+  - `after update` — executes after an update is saved
+  - `on delete` — executes when a record is deleted
+- **Priority** — execution order (lower priority numbers run first)
+- **Condition** — filter condition (encoded query like `stateNOT 7`) — if blank, rule always runs
+- **Script** — the full GlideScript content (has access to `current` and `previous` GlideRecord objects)
+
+**Look for:**
+- Rules with low priority numbers that may execute before your workflow
+- Rules that set fields or trigger automations that conflict with your workflow
+- Conditions that may prevent rules from running in certain scenarios
+
+**Inbound Email Actions section:**
+- Lists all **active** email actions configured for the table
+- Shows whether the action responds to incoming emails (`Respond to sender`)
+- Shows the script that processes the email (may parse attachments, create records, update fields)
+
+**Notification Definitions section:**
+- Lists all **active** notifications that can send emails for this table
+- **When** field shows when the notification fires (same options as business rules)
+- **Condition** — encoded query filter (empty = always)
+- **Recipients** — who receives the notification (can be a user, group, or recipient list)
+- **Subject** — email subject line (may contain variables like `${incident.number}`)
+- **Message** — email body template (may contain Velocity template syntax)
+
+**Email Correlation section:**
+- Shows **all emails sent** for this specific record, linked to their triggering notifications
+- **Email watchers** — users subscribed to updates on this record
+- Each email entry shows:
+  - Subject and recipients
+  - Created timestamp
+  - Which notification triggered it (links back to Notification Definitions)
+  - Email body (first 500 characters if long)
+
+**How to use this for analysis:**
+1. **Identify which notifications are expected** — review the Notification Definitions and compare their conditions/recipients against what you see in the actual emails sent
+2. **Check for missing emails** — if you expected an email but it doesn't appear in the Email section, check if:
+   - The notification's **Condition** would have matched the record state
+   - The notification is **active**
+   - The recipients were correctly resolved
+3. **Identify email storms** — if many similar emails were sent, check if:
+   - A business rule and a notification are both sending emails
+   - A workflow script and a business rule are both acting on the same event
+4. **Trace automation chains** — use the notification and business rule scripts to understand the complete automation flow
+   - A notification fires when a field changes
+   - Its email triggers an inbound email action
+   - The inbound email action script updates another field
+   - That field change triggers a business rule
+   - The business rule creates a task, etc.
 
 **Multiple workflow contexts:**
 - A single RITM may have multiple workflow contexts (e.g., a main workflow plus sub-workflows, or a workflow that was restarted)
@@ -374,9 +592,19 @@ If a Value column is empty, that input is **not mapped** and the PowerShell vari
 - **`sc_task`** — Catalog Task (child of RITM)
 - **`sc_item_option_mtom`** — M2M table linking RITM to its catalog variable values
 - **`sc_item_option`** — Individual catalog variable value records
+- **`incident`** — Incident record
+- **`incident_task`** — Incident task (child of incident)
+- **`change_request`** — Change request (may be related to incidents)
+- **`cmn_form_field_value`** — Form field values (incident/RITM variables)
 - **`sys_user`** — User record
 - **`sys_user_group`** — Group record
 - **`sys_user_grmember`** — Group membership (M2M)
+- **`sys_business_rule`** — Business rules (automated actions that fire on insert/update/delete)
+- **`sysevent_in_email_action`** — Inbound email actions (automated processing of incoming emails)
+- **`sysevent_email_action`** — Notification definitions (email triggers and templates)
+- **`sys_email_script`** — Email scripts (reusable template includes for notifications)
+- **`sys_email`** — Email records (history of emails sent)
+- **`sys_watchers`** / **`sys_watch_2`** — Email watchers/subscribers (who receives updates on a record)
 - **`wf_context`** — Workflow execution context (links a workflow version to a specific record run)
 - **`wf_history`** — Completed activity execution records
 - **`wf_executing`** — Currently in-flight activity execution records

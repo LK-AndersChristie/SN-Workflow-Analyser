@@ -12,13 +12,17 @@ All scripts run in **Scripts - Background** (`/sys.scripts.do`).
 **`Scripts/extract_sn_workflow.js`** — Extracts complete workflow definitions and executions into a single text output.
 
 **Features:**
-- Auto-detects input type — pass a RITM number, any sys_id, or a workflow version and it figures out the rest
+- Auto-detects input type — pass a RITM/INC number, any sys_id, or a workflow version and it figures out the rest
 - Extracts all scripts, conditions, Set Values mappings, transitions, and orchestration inputs
 - Includes execution history with per-activity timing, results, and faults
 - Extracts orchestration scripts (PowerShell/SSH from `sa_step`) that run on the MID Server
 - Shows MID Server and credential alias per orchestration activity
 - Follows sub-workflows recursively (up to 10 levels deep)
-- For RITMs: also extracts catalog variables, journal entries, approval history, catalog tasks, emails/notifications, and attachments
+- Supports Flow Designer flows (`sys_hub_flow`) — triggers, actions, subflows, inputs/outputs, scripts
+- For RITMs & Incidents: extracts record details, variables, journal entries, approval history, tasks, attachments
+- For RITMs & Incidents: email & notification analysis — all emails sent, which notifications triggered them, email watchers/subscribers
+- For RITMs & Incidents: business rules — all active rules for the table with full scripts and conditions
+- For RITMs & Incidents: inbound email actions — email processing scripts configured for the table
 
 **Supported inputs:**
 
@@ -26,12 +30,16 @@ All scripts run in **Scripts - Background** (`/sys.scripts.do`).
 |-------|---------|
 | RITM number | `RITM0043257` |
 | RITM sys_id | 32-char hex from `sc_req_item` |
+| INC number | `INC0043257` |
+| Incident sys_id | 32-char hex from `incident` |
+| Flow Designer flow sys_id | 32-char hex from `sys_hub_flow` |
+| Flow Designer flow name | `"My Flow Name"` |
 | Workflow context sys_id | From "Show Workflow" URL (`sysparm_context=...`) |
 | Workflow version sys_id | From Workflow Editor URL (`sysparm_wf_version=...`) |
 | Any record sys_id | Finds all workflow contexts tied to that record |
 
 **How to use:**
-1. Open `Scripts/extract_sn_workflow.js` and set `var INPUT = 'RITM0043257';` (or any sys_id)
+1. Open `Scripts/extract_sn_workflow.js` and set `var SYS_ID = 'RITM0043257';` (or any sys_id / INC number)
 2. Paste the script into **Scripts - Background** and run
 3. Copy the output and save to a `.txt` file (or use [SN Utils](https://www.arnoudkooi.com/) to export)
 4. Feed the file to your AI assistant for analysis
@@ -67,7 +75,7 @@ The output from these scripts is designed to be consumed by AI assistants. See [
 
 Tested on ServiceNow Washington DC (2024). Should work on Orlando through Xanadu.
 
-The workflow extractor targets the legacy Workflow Editor (`workflow_ide.do`) — it does **not** cover Flow Designer flows.
+The workflow extractor supports both the legacy Workflow Editor (`workflow_ide.do`) and Flow Designer flows (`sys_hub_flow`).
 
 ---
 
