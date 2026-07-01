@@ -1001,6 +1001,68 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     var visitedFlows = {};  // track visited flow sys_ids to prevent loops
     var subWorkflowCount = 0;
 
+    // Helper: query a table filtering by flow sys_id.
+    // Different SN versions use different field names ('flow', 'model', 'flow_object').
+    // This function checks sys_dictionary to find valid fields before querying.
+    var _flowFieldCache = {};  // cache: tableName -> fieldName
+    function queryByFlow(tableName, flowSysId, orderByField) {
+        // Check cache first
+        if (_flowFieldCache[tableName]) {
+            var grCached = new GlideRecord(tableName);
+            grCached.addQuery(_flowFieldCache[tableName], flowSysId);
+            if (orderByField) grCached.orderBy(orderByField);
+            grCached.query();
+            return grCached;
+        }
+
+        var candidates = ['flow', 'model', 'flow_object'];
+        // Get full table hierarchy for dictionary lookup
+        var tables = [];
+        var currentTable = tableName;
+        for (var hi = 0; hi < 5 && currentTable; hi++) {
+            tables.push(currentTable);
+            var objGr = new GlideRecord('sys_db_object');
+            objGr.addQuery('name', currentTable);
+            objGr.setLimit(1);
+            objGr.query();
+            if (objGr.next() && objGr.getValue('super_class')) {
+                // super_class is a reference to sys_db_object; dot-walk to get name
+                currentTable = objGr.super_class.name + '';
+                if (!currentTable || currentTable === 'undefined' || currentTable === 'null') {
+                    currentTable = '';
+                }
+            } else {
+                currentTable = '';
+            }
+        }
+
+        for (var ci = 0; ci < candidates.length; ci++) {
+            var field = candidates[ci];
+            var dictGr = new GlideRecord('sys_dictionary');
+            dictGr.addQuery('name', 'IN', tables.join(','));
+            dictGr.addQuery('element', field);
+            dictGr.setLimit(1);
+            dictGr.query();
+            if (dictGr.hasNext()) {
+                _flowFieldCache[tableName] = field;
+                var gr = new GlideRecord(tableName);
+                if (!gr.isValid()) return gr;
+                gr.addQuery(field, flowSysId);
+                if (orderByField) gr.orderBy(orderByField);
+                gr.query();
+                return gr;
+            }
+        }
+        // No valid field found — return empty result set
+        p('  (WARNING: No flow reference field found on ' + tableName + ' — checked hierarchy: ' + tables.join(', ') + ')');
+        var grEmpty = new GlideRecord(tableName);
+        if (grEmpty.isValid()) {
+            grEmpty.addQuery('sys_id', 'INVALID_NO_FLOW_FIELD');
+            grEmpty.query();
+        }
+        return grEmpty;
+    }
+
     function extractFlowDesigner(targetFlowSysId, depth) {
         if (visitedFlows[targetFlowSysId]) {
             p('\n(Flow ' + targetFlowSysId + ' already extracted above — skipping to avoid loop)');
@@ -1038,9 +1100,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
         // ── Flow Trigger ─────────────────────────────────────────
         p(subsection('TRIGGER'));
-        var grTrigger = new GlideRecord('sys_hub_trigger_instance');
-        grTrigger.addQuery('flow', targetFlowSysId);
-        grTrigger.query();
+        var grTrigger = queryByFlow('sys_hub_trigger_instance', targetFlowSysId, null);
         var triggerCount = 0;
         while (grTrigger.next()) {
             triggerCount++;
@@ -1071,9 +1131,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         p(subsection('FLOW INPUTS'));
         var grFlowInput = new GlideRecord('sys_hub_flow_input');
         if (grFlowInput.isValid()) {
-            grFlowInput.addQuery('flow', targetFlowSysId);
-            grFlowInput.orderBy('order');
-            grFlowInput.query();
+            grFlowInput = queryByFlow('sys_hub_flow_input', targetFlowSysId, 'order');
             var inputCount = 0;
             while (grFlowInput.next()) {
                 inputCount++;
@@ -1094,9 +1152,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         p(subsection('FLOW OUTPUTS'));
         var grFlowOutput = new GlideRecord('sys_hub_flow_output');
         if (grFlowOutput.isValid()) {
-            grFlowOutput.addQuery('flow', targetFlowSysId);
-            grFlowOutput.orderBy('order');
-            grFlowOutput.query();
+            grFlowOutput = queryByFlow('sys_hub_flow_output', targetFlowSysId, 'order');
             var outputCount = 0;
             while (grFlowOutput.next()) {
                 outputCount++;
@@ -1114,10 +1170,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // ── Flow Actions (steps) ─────────────────────────────────
         //    Actions/steps are stored in sys_hub_action_instance
         p(subsection('FLOW ACTIONS / STEPS'));
-        var grActions = new GlideRecord('sys_hub_action_instance');
-        grActions.addQuery('flow', targetFlowSysId);
-        grActions.orderBy('order');
-        grActions.query();
+        var grActions = queryByFlow('sys_hub_action_instance', targetFlowSysId, 'order');
 
         var actionList = [];
         var subFlowRefs = [];  // collect sub-flow references for recursion
@@ -1247,8 +1300,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // ── Subflow step configuration from sys_hub_sub_flow_instance ──
         var grSubFlowInst = new GlideRecord('sys_hub_sub_flow_instance');
         if (grSubFlowInst.isValid()) {
-            grSubFlowInst.addQuery('flow', targetFlowSysId);
-            grSubFlowInst.query();
+            grSubFlowInst = queryByFlow('sys_hub_sub_flow_instance', targetFlowSysId, null);
             while (grSubFlowInst.next()) {
                 var sfRef = grSubFlowInst.getValue('sub_flow') || '';
                 var sfName = grSubFlowInst.getDisplayValue('sub_flow') || '';
@@ -1265,9 +1317,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // ── Flow Logic / Conditions (sys_hub_flow_logic) ─────────
         var grLogic = new GlideRecord('sys_hub_flow_logic');
         if (grLogic.isValid()) {
-            grLogic.addQuery('flow', targetFlowSysId);
-            grLogic.orderBy('order');
-            grLogic.query();
+            grLogic = queryByFlow('sys_hub_flow_logic', targetFlowSysId, 'order');
             var logicCount = 0;
             while (grLogic.next()) {
                 if (logicCount === 0) p(subsection('FLOW LOGIC / CONDITIONS'));
@@ -1288,8 +1338,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // ── Flow Variables (sys_hub_flow_variable) ───────────────
         var grFlowVar = new GlideRecord('sys_hub_flow_variable');
         if (grFlowVar.isValid()) {
-            grFlowVar.addQuery('flow', targetFlowSysId);
-            grFlowVar.query();
+            grFlowVar = queryByFlow('sys_hub_flow_variable', targetFlowSysId, null);
             var varCount = 0;
             while (grFlowVar.next()) {
                 if (varCount === 0) p(subsection('FLOW VARIABLES'));
