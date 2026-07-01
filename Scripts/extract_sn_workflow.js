@@ -627,15 +627,21 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
         // ── Incident Variables ───────────────────────────────────
         p(subsection('INCIDENT VARIABLES'));
-        var grVar = new GlideRecord('cmn_form_field_value');
-        grVar.addQuery('parent', incSysId);
-        grVar.query();
         var varCount = 0;
-        while (grVar.next()) {
-            var varName = grVar.getDisplayValue('variable') || grVar.getValue('variable') || '';
-            var varVal = grVar.getValue('value') || '';
-            p('  ' + varName + ': ' + varVal);
-            varCount++;
+        try {
+            var grVar = new GlideRecord('question_answer');
+            if (grVar.isValid()) {
+                grVar.addQuery('table_sys_id', incSysId);
+                grVar.query();
+                while (grVar.next()) {
+                    var varName = grVar.getDisplayValue('question') || grVar.getValue('question') || '';
+                    var varVal = grVar.getValue('value') || '';
+                    p('  ' + varName + ': ' + varVal);
+                    varCount++;
+                }
+            }
+        } catch (e) {
+            // table may not exist on this instance
         }
         if (varCount === 0) p('  (no variables found)');
 
