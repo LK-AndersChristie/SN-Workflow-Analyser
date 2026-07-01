@@ -346,8 +346,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     // ── Helper: Extract Business Rules for a table ───────────
     function extractBusinessRules(tableName, recordSysId) {
         p(subsection('BUSINESS RULES FOR TABLE: ' + tableName));
-        var grBr = new GlideRecord('sys_business_rule');
-        grBr.addQuery('table', tableName);
+        var grBr = new GlideRecord('sys_script');
+        grBr.addQuery('collection', tableName);
         grBr.addQuery('active', true);
         grBr.orderBy('name');
         grBr.query();
@@ -701,7 +701,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // ── Related Changes (CHG) ────────────────────────────────
         p(subsection('RELATED CHANGES'));
         var grChg = new GlideRecord('change_request');
-        grChg.addQuery('problem.incident.number', incNumber);
+        grChg.addQuery('reason', 'CONTAINS', incNumber);
+        grChg.addOrCondition('justification', 'CONTAINS', incNumber);
+        grChg.addOrCondition('correlation_id', incSysId);
         grChg.orderBy('number');
         grChg.query();
         var chgCount = 0;
