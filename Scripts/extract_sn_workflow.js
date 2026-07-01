@@ -103,15 +103,33 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         p('State: ' + grRitm.getDisplayValue('state'));
         p('Stage: ' + (grRitm.getDisplayValue('stage') || ''));
         p('Approval: ' + grRitm.getDisplayValue('approval'));
+        if (grRitm.getValue('approval_set')) p('Approval set: ' + grRitm.getDisplayValue('approval_set'));
+        p('Priority: ' + grRitm.getDisplayValue('priority'));
         p('Assigned to: ' + (grRitm.getDisplayValue('assigned_to') || '(unassigned)'));
         p('Assignment group: ' + (grRitm.getDisplayValue('assignment_group') || ''));
+        p('Requested for: ' + (grRitm.getDisplayValue('requested_for') || ''));
         p('Opened by: ' + (grRitm.getDisplayValue('opened_by') || ''));
         p('Opened at: ' + (grRitm.getDisplayValue('opened_at') || ''));
         p('Request: ' + (grRitm.getDisplayValue('request') || ''));
         p('Cat item: ' + (grRitm.getDisplayValue('cat_item') || ''));
+        if (grRitm.getValue('location')) p('Location: ' + grRitm.getDisplayValue('location'));
+        if (grRitm.getValue('company')) p('Company: ' + grRitm.getDisplayValue('company'));
+        if (grRitm.getValue('cmdb_ci')) p('Configuration item: ' + grRitm.getDisplayValue('cmdb_ci'));
+        if (grRitm.getValue('configuration_item')) p('Configuration item (alt): ' + grRitm.getDisplayValue('configuration_item'));
+        if (grRitm.getValue('business_service')) p('Business service: ' + grRitm.getDisplayValue('business_service'));
+        if (grRitm.getValue('service_offering')) p('Service offering: ' + grRitm.getDisplayValue('service_offering'));
+        if (grRitm.getValue('quantity') && grRitm.getValue('quantity') !== '1') p('Quantity: ' + grRitm.getValue('quantity'));
+        if (grRitm.getValue('price') && grRitm.getValue('price') !== '0') p('Price: ' + grRitm.getValue('price'));
+        if (grRitm.getValue('estimated_delivery')) p('Estimated delivery: ' + grRitm.getDisplayValue('estimated_delivery'));
+        if (grRitm.getValue('due_date')) p('Due date: ' + grRitm.getDisplayValue('due_date'));
+        if (grRitm.getValue('sla_due')) p('SLA due: ' + grRitm.getDisplayValue('sla_due'));
+        p('Made SLA: ' + (grRitm.getValue('made_sla') || ''));
         if (grRitm.getValue('closed_at')) p('Closed at: ' + grRitm.getDisplayValue('closed_at'));
         if (grRitm.getValue('closed_by')) p('Closed by: ' + grRitm.getDisplayValue('closed_by'));
         if (grRitm.getValue('close_notes')) p('Close notes: ' + grRitm.getValue('close_notes'));
+        if (grRitm.getValue('context')) p('Workflow context: ' + grRitm.getDisplayValue('context'));
+        if (grRitm.getValue('flow_context')) p('Flow context: ' + grRitm.getDisplayValue('flow_context'));
+        if (grRitm.getValue('reassignment_count') && grRitm.getValue('reassignment_count') !== '0') p('Reassignment count: ' + grRitm.getValue('reassignment_count'));
         if (grRitm.getValue('description')) {
             p('\nDESCRIPTION:');
             p(grRitm.getValue('description'));
@@ -120,6 +138,25 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             p('\nADDITIONAL COMMENTS:');
             p(grRitm.getValue('comments'));
         }
+
+        // ── Custom fields (u_*) ──────────────────────────────────
+        p(subsection('CUSTOM FIELDS'));
+        var ritmCustomCount = 0;
+        var ritmFields = grRitm.getFields();
+        for (var rfi = 0; rfi < ritmFields.size(); rfi++) {
+            var rge = ritmFields.get(rfi);
+            var rFieldName = rge.getName();
+            if (rFieldName.indexOf('u_') === 0) {
+                var rVal = grRitm.getValue(rFieldName) || '';
+                var rDispVal = grRitm.getDisplayValue(rFieldName) || '';
+                if (rVal || rDispVal) {
+                    var rLabel = rge.getLabel() || rFieldName;
+                    p('  ' + rLabel + ': ' + (rDispVal || rVal));
+                    ritmCustomCount++;
+                }
+            }
+        }
+        if (ritmCustomCount === 0) p('  (no custom fields with values)');
 
         // ── RITM Variables (sc_item_option_mtom → sc_item_option) ─────
         p(subsection('RITM VARIABLES'));
@@ -609,17 +646,81 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         p('Short description: ' + (grInc.getValue('short_description') || ''));
         p('Description: ' + (grInc.getValue('description') || ''));
         p('State: ' + grInc.getDisplayValue('state'));
+        p('Incident state: ' + grInc.getDisplayValue('incident_state'));
         p('Priority: ' + grInc.getDisplayValue('priority'));
+        p('Severity: ' + grInc.getDisplayValue('severity'));
         p('Urgency: ' + grInc.getDisplayValue('urgency'));
         p('Impact: ' + grInc.getDisplayValue('impact'));
+        p('Escalation: ' + grInc.getDisplayValue('escalation'));
         p('Caller: ' + (grInc.getDisplayValue('caller_id') || '(unknown)'));
+        p('Opened by: ' + (grInc.getDisplayValue('opened_by') || ''));
         p('Assigned to: ' + (grInc.getDisplayValue('assigned_to') || '(unassigned)'));
         p('Assignment group: ' + (grInc.getDisplayValue('assignment_group') || ''));
         p('Category: ' + (grInc.getDisplayValue('category') || ''));
         p('Subcategory: ' + (grInc.getDisplayValue('subcategory') || ''));
+        p('Contact type: ' + (grInc.getDisplayValue('contact_type') || ''));
+        p('Company: ' + (grInc.getDisplayValue('company') || ''));
+        p('Location: ' + (grInc.getDisplayValue('location') || ''));
+        if (grInc.getValue('cmdb_ci')) p('Configuration item: ' + grInc.getDisplayValue('cmdb_ci'));
+        if (grInc.getValue('business_service')) p('Business service: ' + grInc.getDisplayValue('business_service'));
+        if (grInc.getValue('service_offering')) p('Service offering: ' + grInc.getDisplayValue('service_offering'));
+        if (grInc.getValue('caused_by')) p('Caused by: ' + grInc.getDisplayValue('caused_by'));
+        if (grInc.getValue('cause')) p('Cause: ' + grInc.getValue('cause'));
+        if (grInc.getValue('parent_incident')) p('Parent incident: ' + grInc.getDisplayValue('parent_incident'));
+        if (grInc.getValue('child_incidents') && grInc.getValue('child_incidents') !== '0') p('Child incidents: ' + grInc.getValue('child_incidents'));
+        if (grInc.getValue('problem_id')) p('Problem: ' + grInc.getDisplayValue('problem_id'));
+        if (grInc.getValue('rfc')) p('Change request: ' + grInc.getDisplayValue('rfc'));
+        if (grInc.getValue('correlation_id')) p('Correlation ID: ' + grInc.getValue('correlation_id'));
+        p('Made SLA: ' + (grInc.getValue('made_sla') || ''));
+        if (grInc.getValue('sla_due')) p('SLA due: ' + grInc.getDisplayValue('sla_due'));
+        if (grInc.getValue('due_date')) p('Due date: ' + grInc.getDisplayValue('due_date'));
         if (grInc.getValue('opened_at')) p('Opened: ' + grInc.getDisplayValue('opened_at'));
         if (grInc.getValue('resolved_at')) p('Resolved: ' + grInc.getDisplayValue('resolved_at'));
+        if (grInc.getValue('resolved_by')) p('Resolved by: ' + grInc.getDisplayValue('resolved_by'));
         if (grInc.getValue('closed_at')) p('Closed: ' + grInc.getDisplayValue('closed_at'));
+        if (grInc.getValue('closed_by')) p('Closed by: ' + grInc.getDisplayValue('closed_by'));
+        if (grInc.getValue('close_code')) p('Close code: ' + grInc.getDisplayValue('close_code'));
+        if (grInc.getValue('close_notes')) p('Close notes: ' + grInc.getValue('close_notes'));
+        if (grInc.getValue('reopen_count') && grInc.getValue('reopen_count') !== '0') {
+            p('Reopen count: ' + grInc.getValue('reopen_count'));
+            if (grInc.getValue('reopened_by')) p('Reopened by: ' + grInc.getDisplayValue('reopened_by'));
+            if (grInc.getValue('reopened_time')) p('Reopened time: ' + grInc.getDisplayValue('reopened_time'));
+        }
+        if (grInc.getValue('knowledge') === 'true') p('Knowledge: true');
+        if (grInc.getValue('reassignment_count') && grInc.getValue('reassignment_count') !== '0') p('Reassignment count: ' + grInc.getValue('reassignment_count'));
+        if (grInc.getValue('approval') && grInc.getValue('approval') !== 'not requested') p('Approval: ' + grInc.getDisplayValue('approval'));
+        if (grInc.getValue('business_impact')) p('Business impact: ' + grInc.getValue('business_impact'));
+        if (grInc.getValue('follow_up')) p('Follow up: ' + grInc.getDisplayValue('follow_up'));
+        if (grInc.getValue('work_start')) p('Actual start: ' + grInc.getDisplayValue('work_start'));
+        if (grInc.getValue('work_end')) p('Actual end: ' + grInc.getDisplayValue('work_end'));
+        if (grInc.getValue('time_worked')) p('Time worked: ' + grInc.getDisplayValue('time_worked'));
+        if (grInc.getValue('business_duration')) p('Business duration: ' + grInc.getDisplayValue('business_duration'));
+        if (grInc.getValue('calendar_duration')) p('Duration: ' + grInc.getDisplayValue('calendar_duration'));
+        if (grInc.getValue('business_stc')) p('Business resolve time (s): ' + grInc.getValue('business_stc'));
+        if (grInc.getValue('calendar_stc')) p('Resolve time (s): ' + grInc.getValue('calendar_stc'));
+        if (grInc.getValue('contract')) p('Contract: ' + grInc.getDisplayValue('contract'));
+        if (grInc.getValue('route_reason')) p('Route reason: ' + grInc.getDisplayValue('route_reason'));
+
+        // ── Custom fields (u_*) ──────────────────────────────────
+        //    Dynamically extract all custom fields present on the record
+        p(subsection('CUSTOM FIELDS'));
+        var customCount = 0;
+        var fields = grInc.getFields();
+        for (var fi = 0; fi < fields.size(); fi++) {
+            var ge = fields.get(fi);
+            var fieldName = ge.getName();
+            if (fieldName.indexOf('u_') === 0) {
+                var val = grInc.getValue(fieldName) || '';
+                var dispVal = grInc.getDisplayValue(fieldName) || '';
+                if (val || dispVal) {
+                    var label = ge.getLabel() || fieldName;
+                    p('  ' + label + ': ' + (dispVal || val));
+                    customCount++;
+                }
+            }
+        }
+        if (customCount === 0) p('  (no custom fields with values)');
+
         if (grInc.getValue('work_notes')) {
             p('\nWORK NOTES:');
             p(grInc.getValue('work_notes'));
