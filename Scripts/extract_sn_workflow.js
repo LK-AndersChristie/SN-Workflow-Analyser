@@ -73,6 +73,17 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         gs.print(text);
     }
 
+    // sys_email is a rotated/partitioned table in SN. Queries against it
+    // produce slow-query SQL debug output that leaks into gs.print.
+    // Suppress session debugging around those queries.
+    var _savedDebug;
+    function suppressDebug() {
+        try { var s = GlideSession.get(); _savedDebug = s.isDebug(); s.setDebug(false); } catch(e) {}
+    }
+    function restoreDebug() {
+        try { if (_savedDebug) GlideSession.get().setDebug(true); } catch(e) {}
+    }
+
     // ── Validate ─────────────────────────────────────────────
 
     if (!sysId || sysId.indexOf('PUT_YOUR') === 0) {
@@ -246,7 +257,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         var grEmail = new GlideRecord('sys_email');
         grEmail.addQuery('instance', ritmSysId);
         grEmail.orderBy('sys_created_on');
+        suppressDebug();
         grEmail.query();
+        restoreDebug();
         var emailCount = 0;
         while (grEmail.next()) {
             p('  Type: ' + grEmail.getDisplayValue('type'));
@@ -265,7 +278,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             grEmail2.addQuery('target_table', 'sc_req_item');
             grEmail2.addQuery('instance', ritmSysId);
             grEmail2.orderBy('sys_created_on');
+            suppressDebug();
             grEmail2.query();
+            restoreDebug();
             while (grEmail2.next()) {
                 p('  Type: ' + grEmail2.getDisplayValue('type'));
                 p('  Subject: ' + (grEmail2.getValue('subject') || ''));
@@ -489,7 +504,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         var grEmailNotif = new GlideRecord('sys_email');
         grEmailNotif.addQuery('instance', recordSysId);
         grEmailNotif.addNotNullQuery('notification');
+        suppressDebug();
         grEmailNotif.query();
+        restoreDebug();
         while (grEmailNotif.next()) {
             firedNotifIds[grEmailNotif.getValue('notification')] = true;
         }
@@ -642,7 +659,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         var grEmail = new GlideRecord('sys_email');
         grEmail.addQuery('instance', recordSysId);
         grEmail.orderBy('sys_created_on');
+        suppressDebug();
         grEmail.query();
+        restoreDebug();
 
         var emailCount = 0;
         var notificationLinks = {};
