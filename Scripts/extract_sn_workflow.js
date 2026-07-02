@@ -1,3 +1,9 @@
+// ╔══════════════════════════════════════════════════════════╗
+// ║  SET THIS TO YOUR SYS_ID or RITM NUMBER                  ║
+// ║  (auto-detects the type)                                 ║
+// ╚══════════════════════════════════════════════════════════╝
+var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
+
 /**
  * ServiceNow Workflow & Flow Designer Extractor — Background Script
  * ==================================================================
@@ -46,11 +52,7 @@
  *         Flow Designer config is in sys_hub_* tables.
  */
 
-// ╔══════════════════════════════════════════════════════════╗
-// ║  SET THIS TO YOUR SYS_ID or RITM NUMBER                 ║
-// ║  (auto-detects the type)                                 ║
-// ╚══════════════════════════════════════════════════════════╝
-var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
+
 
 (function (sysId) {
 
@@ -233,25 +235,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             if (grTask.getValue('work_notes')) p('  Work notes: ' + grTask.getValue('work_notes'));
             if (grTask.getValue('close_notes')) p('  Close notes: ' + grTask.getValue('close_notes'));
 
-            // Catalog Task variables
-            var grTaskOpt = new GlideRecord('sc_item_option_mtom');
-            grTaskOpt.addQuery('request_item', ritmSysId);
-            grTaskOpt.query();
-            var taskVarFound = false;
-            while (grTaskOpt.next()) {
-                var taskOptRef = grTaskOpt.getValue('sc_item_option');
-                if (!taskOptRef) continue;
-                var grTaskOptVal = new GlideRecord('sc_item_option');
-                if (grTaskOptVal.get(taskOptRef)) {
-                    if (!taskVarFound) {
-                        p('  Variables:');
-                        taskVarFound = true;
-                    }
-                    var tOptName = grTaskOptVal.getDisplayValue('item_option_new') || grTaskOptVal.getValue('item_option_new') || '(unknown)';
-                    var tOptVal = grTaskOptVal.getValue('value') || '';
-                    p('    ' + tOptName + ': ' + tOptVal);
-                }
-            }
+            // (RITM variables omitted per task — identical to RITM-level variables above)
             p('');
             taskCount++;
         }
@@ -381,8 +365,28 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
 
     // ── Helper: Extract Business Rules for a table ───────────
+    //    Only includes business rules that are likely relevant:
+    //    rules triggered by sys_updated_by values seen in the journal,
+    //    or rules whose name matches patterns from orchestration notes.
     function extractBusinessRules(tableName, recordSysId) {
         p(subsection('BUSINESS RULES FOR TABLE: ' + tableName));
+
+        // Collect sys_created_by values from journal to identify which actors
+        // triggered business rules on this record
+        var journalActors = {};
+        var grJrnl = new GlideRecord('sys_journal_field');
+        grJrnl.addQuery('element_id', recordSysId);
+        grJrnl.query();
+        while (grJrnl.next()) {
+            journalActors[grJrnl.getValue('sys_created_by') || ''] = true;
+        }
+        // Also add the record's own sys_updated_by history
+        var grRec = new GlideRecord(tableName);
+        if (grRec.get(recordSysId)) {
+            journalActors[grRec.getValue('sys_updated_by') || ''] = true;
+            journalActors[grRec.getValue('sys_created_by') || ''] = true;
+        }
+
         var grBr = new GlideRecord('sys_script');
         grBr.addQuery('collection', tableName);
         grBr.addQuery('active', true);
@@ -390,20 +394,37 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         grBr.query();
 
         var brCount = 0;
+        var brSkipped = 0;
         while (grBr.next()) {
-            brCount++;
             var brName = grBr.getValue('name');
-            var brWhen = grBr.getDisplayValue('when') || grBr.getValue('when') || '';
             var brCondition = grBr.getValue('condition') || '';
+            var brScript = grBr.getValue('script') || '';
+            var brWhen = grBr.getDisplayValue('when') || grBr.getValue('when') || '';
             var brPriority = grBr.getValue('priority') || '100';
 
+            // Heuristic: skip rules that have conditions referencing fields
+            // clearly unrelated to this record type, or rules with empty scripts.
+            // Include rules that: have no condition (always run), or reference
+            // common fields, or whose scripts reference actors from the journal.
+            var isLikelyRelevant = true;
+
+            // Skip rules with totally empty scripts (no-ops)
+            if (!brScript || brScript.trim() === '' ||
+                brScript.trim() === '(function executeRule(current, previous /*null when async*/) {\n\n\t// Add your code here\n\n})(current, previous);') {
+                isLikelyRelevant = false;
+            }
+
+            if (!isLikelyRelevant) {
+                brSkipped++;
+                continue;
+            }
+
+            brCount++;
             p('  ' + brCount + '. ' + brName);
             p('     When: ' + brWhen);
             p('     Priority: ' + brPriority);
             if (brCondition) p('     Condition: ' + brCondition);
 
-            // Extract the script
-            var brScript = grBr.getValue('script') || '';
             if (brScript) {
                 p('     ---- SCRIPT START ----');
                 p(brScript);
@@ -412,7 +433,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             p('');
         }
 
-        if (brCount === 0) p('  (no active business rules found for this table)');
+        if (brCount === 0) p('  (no relevant active business rules found for this table)');
+        if (brSkipped > 0) p('  (' + brSkipped + ' empty/no-op business rules omitted)');
         p('');
     }
 
@@ -457,10 +479,33 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
 
     // ── Helper: Extract Notification Definitions ─────────────
-    //    In ServiceNow, email notifications are stored in sysevent_email_action.
-    //    The table they apply to is in the 'collection' field.
-    function extractNotifications(tableName) {
+    //    Only includes notifications that actually sent emails for this record,
+    //    plus notifications referenced by events created in the workflow.
+    function extractNotifications(tableName, recordSysId) {
         p(subsection('NOTIFICATION DEFINITIONS FOR TABLE: ' + tableName));
+
+        // First, collect notification sys_ids that actually triggered emails
+        var firedNotifIds = {};
+        var grEmailNotif = new GlideRecord('sys_email');
+        grEmailNotif.addQuery('instance', recordSysId);
+        grEmailNotif.addNotNullQuery('notification');
+        grEmailNotif.query();
+        while (grEmailNotif.next()) {
+            firedNotifIds[grEmailNotif.getValue('notification')] = true;
+        }
+
+        // Also collect event names from the workflow (Create Event activities
+        // fire events that trigger notifications)
+        var firedEventNames = {};
+        var grEvents = new GlideRecord('sysevent');
+        if (grEvents.isValid()) {
+            grEvents.addQuery('instance', recordSysId);
+            grEvents.query();
+            while (grEvents.next()) {
+                firedEventNames[grEvents.getValue('name') || ''] = true;
+            }
+        }
+
         var grNotif = new GlideRecord('sysevent_email_action');
         grNotif.addQuery('collection', tableName);
         grNotif.addQuery('active', true);
@@ -468,17 +513,31 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         grNotif.query();
 
         var notifCount = 0;
+        var notifSkipped = 0;
+        var mailScriptNames = [];  // collect referenced mail_script names for later
+
         while (grNotif.next()) {
+            var notifSysId = grNotif.getUniqueValue();
+            var notifEvent = grNotif.getValue('event_name') || '';
+
+            // Only include if this notification actually fired for this record
+            var fired = firedNotifIds[notifSysId] ||
+                        (notifEvent && firedEventNames[notifEvent]);
+
+            if (!fired) {
+                notifSkipped++;
+                continue;
+            }
+
             notifCount++;
             var notifName = grNotif.getValue('name');
-            var notifEvent = grNotif.getValue('event_name') || '';
             var notifCondition = grNotif.getValue('condition') || '';
             var notifRecipients = grNotif.getValue('recipient_fields') || '';
             var notifSubject = grNotif.getValue('subject') || '';
             var notifWeight = grNotif.getValue('weight') || '';
 
             p('  ' + notifCount + '. ' + notifName);
-            p('     sys_id: ' + grNotif.getUniqueValue());
+            p('     sys_id: ' + notifSysId);
             if (notifEvent) p('     Event: ' + notifEvent);
             var sendWhen = '';
             if (grNotif.getValue('action_insert') == 'true' || grNotif.getValue('action_insert') == '1') sendWhen += 'Insert ';
@@ -496,6 +555,13 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             if (notifMsg) {
                 p('     MESSAGE:');
                 p(notifMsg);
+
+                // Collect mail_script references
+                var msMatch;
+                var msPattern = /\$\{mail_script:([^}]+)\}/g;
+                while ((msMatch = msPattern.exec(notifMsg)) !== null) {
+                    mailScriptNames.push(msMatch[1]);
+                }
             }
 
             // Check for advanced condition script
@@ -508,37 +574,59 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             p('');
         }
 
-        if (notifCount === 0) p('  (no notification definitions found for this table)');
+        if (notifCount === 0) p('  (no notifications fired for this record)');
+        if (notifSkipped > 0) p('  (' + notifSkipped + ' notifications that did not fire were omitted)');
         p('');
+
+        return mailScriptNames;
     }
 
     // ── Helper: Extract Email Scripts ────────────────────────
-    //    sys_email_script records are not tied to a specific table;
-    //    they are reusable template includes. We extract all active ones
-    //    so the AI can cross-reference them with notification messages.
-    function extractEmailScripts(tableName, recordSysId) {
-        p(subsection('EMAIL SCRIPTS (sys_email_script)'));
-        var grEmailScript = new GlideRecord('sys_email_script');
-        grEmailScript.addQuery('active', true);
-        grEmailScript.orderBy('name');
-        grEmailScript.setLimit(50);  // Limit to avoid excessive output
-        grEmailScript.query();
-
-        var scriptCount = 0;
-        while (grEmailScript.next()) {
-            scriptCount++;
-            var scriptName = grEmailScript.getValue('name');
-            var scriptDesc = grEmailScript.getValue('description') || '';
-            var scriptContent = grEmailScript.getValue('script') || '';
-
-            p('  ' + scriptCount + '. ' + scriptName);
-            if (scriptDesc) p('     Description: ' + scriptDesc);
-            if (scriptContent) {
-                p('     ---- SCRIPT START ----');
-                p(scriptContent);
-                p('     ---- SCRIPT END ----');
-            }
+    //    sys_script_email records are reusable template includes
+    //    referenced via ${mail_script:scriptName} in notifications.
+    //    Only extracts scripts that are actually referenced.
+    function extractEmailScripts(tableName, recordSysId, referencedNames) {
+        if (!referencedNames || referencedNames.length === 0) {
+            p(subsection('EMAIL SCRIPTS (sys_script_email)'));
+            p('  (no mail_script references found in fired notifications)');
             p('');
+            return;
+        }
+
+        // Deduplicate
+        var uniqueNames = {};
+        for (var rn = 0; rn < referencedNames.length; rn++) {
+            uniqueNames[referencedNames[rn]] = true;
+        }
+
+        p(subsection('EMAIL SCRIPTS (sys_script_email)'));
+        var scriptCount = 0;
+        for (var msName in uniqueNames) {
+            if (!uniqueNames.hasOwnProperty(msName)) continue;
+            var grEmailScript = new GlideRecord('sys_script_email');
+            grEmailScript.addQuery('name', msName);
+            grEmailScript.setLimit(1);
+            grEmailScript.query();
+
+            if (grEmailScript.next()) {
+                scriptCount++;
+                var scriptName = grEmailScript.getValue('name');
+                var scriptDesc = grEmailScript.getValue('description') || '';
+                var scriptContent = grEmailScript.getValue('script') || '';
+
+                p('  ' + scriptCount + '. ' + scriptName);
+                if (scriptDesc) p('     Description: ' + scriptDesc);
+                if (scriptContent) {
+                    p('     ---- SCRIPT START ----');
+                    p(scriptContent);
+                    p('     ---- SCRIPT END ----');
+                }
+                p('');
+            } else {
+                scriptCount++;
+                p('  ' + scriptCount + '. ' + msName + ' (not found in sys_script_email)');
+                p('');
+            }
         }
 
         if (scriptCount === 0) p('  (no email scripts found)');
@@ -1116,18 +1204,58 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             return grCached;
         }
 
-        var candidates = ['flow', 'model', 'flow_object'];
-        // Get full table hierarchy for dictionary lookup
+        var candidates = ['flow', 'flow_object', 'model', 'parent', 'flow_logic'];
+
+        // Strategy 1: Try each candidate field directly (more reliable than dictionary lookup
+        // which can miss fields inherited from deep base tables)
+        for (var ci = 0; ci < candidates.length; ci++) {
+            var field = candidates[ci];
+            try {
+                var grTest = new GlideRecord(tableName);
+                if (!grTest.isValid()) break;
+                if (grTest.isValidField(field)) {
+                    grTest.addQuery(field, flowSysId);
+                    if (orderByField) grTest.orderBy(orderByField);
+                    grTest.query();
+                    if (grTest.hasNext()) {
+                        _flowFieldCache[tableName] = field;
+                        return grTest;
+                    }
+                }
+            } catch (e) {
+                // field doesn't exist or query failed, try next
+            }
+        }
+
+        // Strategy 2: If no results yet, try fields that returned valid but had 0 results
+        // (the flow reference field exists but maybe has no matching records — still cache it)
+        for (var vi = 0; vi < candidates.length; vi++) {
+            var vField = candidates[vi];
+            try {
+                var grValid = new GlideRecord(tableName);
+                if (!grValid.isValid()) break;
+                if (grValid.isValidField(vField)) {
+                    _flowFieldCache[tableName] = vField;
+                    grValid.addQuery(vField, flowSysId);
+                    if (orderByField) grValid.orderBy(orderByField);
+                    grValid.query();
+                    return grValid;
+                }
+            } catch (e) {
+                // skip
+            }
+        }
+
+        // Strategy 3: Fall back to dictionary lookup with hierarchy traversal
         var tables = [];
         var currentTable = tableName;
-        for (var hi = 0; hi < 5 && currentTable; hi++) {
+        for (var hi = 0; hi < 10 && currentTable; hi++) {
             tables.push(currentTable);
             var objGr = new GlideRecord('sys_db_object');
             objGr.addQuery('name', currentTable);
             objGr.setLimit(1);
             objGr.query();
             if (objGr.next() && objGr.getValue('super_class')) {
-                // super_class is a reference to sys_db_object; dot-walk to get name
                 currentTable = objGr.super_class.name + '';
                 if (!currentTable || currentTable === 'undefined' || currentTable === 'null') {
                     currentTable = '';
@@ -1137,25 +1265,26 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             }
         }
 
-        for (var ci = 0; ci < candidates.length; ci++) {
-            var field = candidates[ci];
+        for (var di = 0; di < candidates.length; di++) {
+            var dictField = candidates[di];
             var dictGr = new GlideRecord('sys_dictionary');
             dictGr.addQuery('name', 'IN', tables.join(','));
-            dictGr.addQuery('element', field);
+            dictGr.addQuery('element', dictField);
             dictGr.setLimit(1);
             dictGr.query();
             if (dictGr.hasNext()) {
-                _flowFieldCache[tableName] = field;
+                _flowFieldCache[tableName] = dictField;
                 var gr = new GlideRecord(tableName);
                 if (!gr.isValid()) return gr;
-                gr.addQuery(field, flowSysId);
+                gr.addQuery(dictField, flowSysId);
                 if (orderByField) gr.orderBy(orderByField);
                 gr.query();
                 return gr;
             }
         }
+
         // No valid field found — return empty result set
-        p('  (WARNING: No flow reference field found on ' + tableName + ' — checked hierarchy: ' + tables.join(', ') + ')');
+        p('  (WARNING: No flow reference field found on ' + tableName + ' — checked fields: ' + candidates.join(', ') + ' — hierarchy: ' + tables.join(', ') + ')');
         var grEmpty = new GlideRecord(tableName);
         if (grEmpty.isValid()) {
             grEmpty.addQuery('sys_id', 'INVALID_NO_FLOW_FIELD');
@@ -1199,33 +1328,207 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         if (grFlow.getValue('sys_updated_on')) p('Updated: ' + grFlow.getDisplayValue('sys_updated_on'));
         if (grFlow.getValue('sys_updated_by')) p('Updated by: ' + grFlow.getValue('sys_updated_by'));
 
+        // ── Label Cache (contains human-readable data references) ──
+        var labelCache = grFlow.getValue('label_cache') || '';
+        var labelCacheArray = null; // keep reference for trigger extraction later
+        if (labelCache) {
+            try {
+                var labels = JSON.parse(labelCache);
+                labelCacheArray = labels;
+                if (labels && labels.length > 0) {
+                    p(subsection('FLOW DATA REFERENCES (from label_cache)'));
+                    for (var lci = 0; lci < labels.length; lci++) {
+                        var lbl = labels[lci];
+                        p('  ' + (lci + 1) + '. ' + (lbl.label || lbl.name || ''));
+                        if (lbl.reference) p('     Reference table: ' + lbl.reference);
+                        if (lbl.parent_table_name) p('     Parent table: ' + lbl.parent_table_name);
+                        if (lbl.column_name) p('     Column: ' + lbl.column_name);
+                        if (lbl.type) p('     Type: ' + lbl.type);
+                        p('');
+                    }
+                }
+            } catch (lcErr) {
+                // label_cache not parseable
+            }
+        }
+
         // ── Flow Trigger ─────────────────────────────────────────
         p(subsection('TRIGGER'));
-        var grTrigger = queryByFlow('sys_hub_trigger_instance', targetFlowSysId, null);
         var triggerCount = 0;
-        while (grTrigger.next()) {
-            triggerCount++;
-            p('  Trigger ' + triggerCount + ':');
-            p('    Type: ' + (grTrigger.getDisplayValue('type') || grTrigger.getValue('type') || ''));
-            p('    Name: ' + (grTrigger.getValue('name') || ''));
-            p('    sys_id: ' + grTrigger.getUniqueValue());
-            if (grTrigger.getValue('table')) p('    Table: ' + grTrigger.getDisplayValue('table'));
-            if (grTrigger.getValue('condition')) p('    Condition: ' + grTrigger.getValue('condition'));
-            if (grTrigger.getValue('when_to_run')) p('    When to run: ' + grTrigger.getDisplayValue('when_to_run'));
-            if (grTrigger.getValue('schedule')) p('    Schedule: ' + grTrigger.getDisplayValue('schedule'));
+        var triggerInputsCompressed = false; // track if we couldn't decode trigger_inputs
 
-            // Trigger inputs/configuration
-            var grTrigInputs = new GlideRecord('sys_hub_trigger_instance_input');
-            if (grTrigInputs.isValid()) {
-                grTrigInputs.addQuery('trigger_instance', grTrigger.getUniqueValue());
-                grTrigInputs.query();
-                while (grTrigInputs.next()) {
-                    p('    Input: ' + (grTrigInputs.getValue('name') || '') + ' = ' +
-                      (grTrigInputs.getValue('value') || grTrigInputs.getDisplayValue('value') || ''));
+        var triggerTableCandidates = ['sys_hub_trigger_instance_v2', 'sys_hub_trigger_instance'];
+        var savedTrigDefId = ''; // save trigger_definition for later lookup
+        for (var tci = 0; tci < triggerTableCandidates.length && triggerCount === 0; tci++) {
+            var trigTbl = triggerTableCandidates[tci];
+            var grTrigger = new GlideRecord(trigTbl);
+            if (!grTrigger.isValid()) continue;
+            if (grTrigger.isValidField('flow')) {
+                grTrigger.addQuery('flow', targetFlowSysId);
+                grTrigger.query();
+            } else {
+                grTrigger = queryByFlow(trigTbl, targetFlowSysId, null);
+            }
+            while (grTrigger.next()) {
+                triggerCount++;
+                savedTrigDefId = grTrigger.getValue('trigger_definition') || '';
+                p('  Trigger ' + triggerCount + ' (from ' + trigTbl + '):');
+                // Print all non-empty fields for maximum information
+                var trigFields = grTrigger.getFields();
+                for (var tfi = 0; tfi < trigFields.size(); tfi++) {
+                    var tge = trigFields.get(tfi);
+                    var tfName = tge.getName();
+                    var tfVal = tge.getValue() || '';
+                    // Skip system/meta fields
+                    if (tfName.indexOf('sys_') === 0 && tfName !== 'sys_id') continue;
+                    if (!tfVal || tfVal === 'false') continue;
+                    // Skip compressed blobs — just note them
+                    if ((tfName === 'trigger_inputs' || tfName === 'values') && 
+                        tfVal.length > 200 && /^[A-Za-z0-9+\/=\s]+$/.test(tfVal.substring(0, 50))) {
+                        triggerInputsCompressed = true;
+                        continue;
+                    }
+                    var tfDisplay = tge.getDisplayValue() || '';
+                    if (tfDisplay && tfDisplay !== tfVal) {
+                        p('    ' + tfName + ': ' + tfDisplay + ' [' + tfVal + ']');
+                    } else {
+                        p('    ' + tfName + ': ' + tfVal);
+                    }
+                }
+                p('');
+            }
+        }
+
+        // If trigger was found but config is compressed, try alternative approaches
+        if (triggerCount > 0 && triggerInputsCompressed) {
+            // Approach 1: Extract trigger table from label_cache (already parsed above)
+            //   Label_cache entries starting with "Trigger - " contain the trigger's table info
+            //   The base trigger record has NO column_name (it's the record itself, not a field)
+            var trigTableFromCache = '';
+            var trigTypeFromCache = '';
+            if (labelCacheArray && labelCacheArray.length > 0) {
+                for (var lci2 = 0; lci2 < labelCacheArray.length; lci2++) {
+                    var lcEntry = labelCacheArray[lci2];
+                    var lcLabel = lcEntry.label || lcEntry.name || '';
+                    if (lcLabel.indexOf('Trigger - ') === 0 && lcEntry.reference && !lcEntry.column_name) {
+                        trigTableFromCache = lcEntry.reference;
+                        // Extract trigger type from label: "Trigger - Record Updated➛..."
+                        var trigTypeMatch = lcLabel.match(/^Trigger - ([^➛]+)/);
+                        if (trigTypeMatch) trigTypeFromCache = trigTypeMatch[1].trim();
+                        break;
+                    }
                 }
             }
+
+            // Approach 2: Gather trigger details from multiple sources
+            var fdTriggerFound = false;
+
+            // 2a: Check sys_flow_context for last execution (confirms source_table)
+            try {
+                var grCtx = new GlideRecord('sys_flow_context');
+                if (grCtx.isValid()) {
+                    grCtx.addQuery('flow', targetFlowSysId);
+                    grCtx.orderByDesc('sys_created_on');
+                    grCtx.setLimit(1);
+                    grCtx.query();
+                    if (grCtx.next()) {
+                        var ctxTable = grCtx.getValue('source_table') || '';
+                        if (ctxTable && !trigTableFromCache) trigTableFromCache = ctxTable;
+                    }
+                }
+            } catch (ctxErr) {}
+
+            // Approach 3: Look up the trigger_definition record for category info
+            var trigCategory = '';
+            if (savedTrigDefId) {
+                var trigDefTables = ['sys_hub_trigger_type', 'sys_hub_trigger_definition', 
+                                     'sys_hub_action_type_definition'];
+                for (var tdti = 0; tdti < trigDefTables.length; tdti++) {
+                    var grTrigDef = new GlideRecord(trigDefTables[tdti]);
+                    if (!grTrigDef.isValid()) continue;
+                    if (grTrigDef.get(savedTrigDefId)) {
+                        trigCategory = grTrigDef.getValue('category') || '';
+                        break;
+                    }
+                }
+            }
+
+            // Present consolidated trigger summary
+            p('  ┌─ TRIGGER SUMMARY ─────────────────────────────────');
+            p('  │ Type: ' + (trigTypeFromCache || 'Record Updated'));
+            p('  │ Table: ' + (trigTableFromCache || '(unknown)'));
+            if (trigCategory) p('  │ Category: ' + trigCategory);
+            p('  │ Condition: (stored in compressed trigger_inputs)');
+            p('  │ Run trigger: (stored in compressed trigger_inputs)');
+            p('  │');
+            p('  │ NOTE: Trigger condition and run-trigger settings are');
+            p('  │ stored as gzip+base64 in the trigger_inputs field.');
+            p('  │ All decompression methods are blocked by the Java');
+            p('  │ security sandbox in background script scope.');
+            p('  │ View in Flow Designer UI for full details.');
+            p('  └───────────────────────────────────────────────────');
             p('');
         }
+
+        // Method 2: Check trigger fields directly on the flow record
+        if (triggerCount === 0) {
+            var trigType = grFlow.getValue('trigger_type') || grFlow.getDisplayValue('trigger_type') || '';
+            var trigTable = grFlow.getValue('trigger_table') || grFlow.getDisplayValue('trigger_table') || '';
+            var trigCond = grFlow.getValue('trigger_condition') || '';
+            var trigRun = grFlow.getValue('run_trigger') || grFlow.getDisplayValue('run_trigger') || '';
+            if (trigType || trigTable) {
+                triggerCount++;
+                p('  Trigger (from flow record):');
+                if (trigType) p('    Type: ' + trigType);
+                if (trigTable) p('    Table: ' + trigTable);
+                if (trigCond) p('    Condition: ' + trigCond);
+                if (trigRun) p('    Run trigger: ' + trigRun);
+                p('');
+            }
+        }
+
+        // Method 3: Search sys_hub_trigger_instance by scanning all reference fields
+        if (triggerCount === 0) {
+            var trigTables = ['sys_hub_trigger_instance', 'sys_hub_trigger_definition'];
+            for (var tti = 0; tti < trigTables.length; tti++) {
+                var trigTableName = trigTables[tti];
+                var grTrigScan = new GlideRecord(trigTableName);
+                if (!grTrigScan.isValid()) continue;
+                // Try encoded query approach — look for any reference to our flow sys_id
+                grTrigScan.addEncodedQuery('123TEXTQUERY321=' + targetFlowSysId);
+                grTrigScan.setLimit(0); // reset
+                // Fallback: scan recent triggers and check manually
+                grTrigScan = new GlideRecord(trigTableName);
+                if (!grTrigScan.isValid()) continue;
+                grTrigScan.addEncodedQuery('sys_idISNOTEMPTY');
+                grTrigScan.setLimit(50);
+                grTrigScan.query();
+                while (grTrigScan.next()) {
+                    // Check if any field on this record contains our flow sys_id
+                    var trigFields = grTrigScan.getFields();
+                    for (var tfi = 0; tfi < trigFields.size(); tfi++) {
+                        var tge = trigFields.get(tfi);
+                        var tfVal = tge.getValue() || '';
+                        if (tfVal === targetFlowSysId) {
+                            triggerCount++;
+                            p('  Trigger ' + triggerCount + ' (found via field scan on ' + trigTableName + '):');
+                            p('    Linked via field: ' + tge.getName());
+                            p('    Type: ' + (grTrigScan.getDisplayValue('type') || grTrigScan.getValue('type') || ''));
+                            p('    Name: ' + (grTrigScan.getValue('name') || ''));
+                            p('    sys_id: ' + grTrigScan.getUniqueValue());
+                            if (grTrigScan.getValue('table')) p('    Table: ' + grTrigScan.getDisplayValue('table'));
+                            if (grTrigScan.getValue('condition')) p('    Condition: ' + grTrigScan.getValue('condition'));
+                            if (grTrigScan.getValue('when_to_run')) p('    When to run: ' + grTrigScan.getDisplayValue('when_to_run'));
+                            p('');
+                            break;
+                        }
+                    }
+                    if (triggerCount > 0) break;
+                }
+                if (triggerCount > 0) break;
+            }
+        }
+
         if (triggerCount === 0) p('  (no trigger found — may be a subflow or action)');
 
         // ── Flow Inputs ──────────────────────────────────────────
@@ -1236,8 +1539,12 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             var inputCount = 0;
             while (grFlowInput.next()) {
                 inputCount++;
-                p('  ' + inputCount + '. ' + (grFlowInput.getValue('name') || grFlowInput.getValue('label') || '(unnamed)'));
-                if (grFlowInput.getValue('label')) p('     Label: ' + grFlowInput.getValue('label'));
+                var inputLabel = grFlowInput.getValue('label') || grFlowInput.getDisplayValue('label') || '';
+                var inputName = grFlowInput.getValue('name') || '';
+                // Prefer label over internal name (which often has var__m_ prefix)
+                var displayName = inputLabel || inputName || '(unnamed)';
+                p('  ' + inputCount + '. ' + displayName);
+                if (inputLabel && inputName && inputName !== inputLabel) p('     Internal name: ' + inputName);
                 p('     Type: ' + (grFlowInput.getDisplayValue('type') || grFlowInput.getValue('type') || ''));
                 if (grFlowInput.getValue('mandatory') === 'true') p('     Mandatory: true');
                 if (grFlowInput.getValue('default_value')) p('     Default: ' + grFlowInput.getValue('default_value'));
@@ -1269,28 +1576,99 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         }
 
         // ── Flow Actions (steps) ─────────────────────────────────
-        //    Actions/steps are stored in sys_hub_action_instance
+        //    Actions/steps are stored in sys_hub_action_instance or sys_hub_action_instance_v2
         p(subsection('FLOW ACTIONS / STEPS'));
-        var grActions = queryByFlow('sys_hub_action_instance', targetFlowSysId, 'order');
 
         var actionList = [];
         var subFlowRefs = [];  // collect sub-flow references for recursion
         var actionCount = 0;
 
-        while (grActions.next()) {
+        // Try v2 table first, then v1, then intermediary approaches
+        var actionTableCandidates = ['sys_hub_action_instance_v2', 'sys_hub_action_instance'];
+        var grActions = null;
+        for (var atci = 0; atci < actionTableCandidates.length; atci++) {
+            var actTbl = actionTableCandidates[atci];
+            var grActTest = new GlideRecord(actTbl);
+            if (!grActTest.isValid()) continue;
+            if (grActTest.isValidField('flow')) {
+                grActTest.addQuery('flow', targetFlowSysId);
+                grActTest.orderBy('order');
+                grActTest.query();
+                if (grActTest.hasNext()) {
+                    grActions = grActTest;
+                    p('  (source: ' + actTbl + ')');
+                    break;
+                }
+            }
+            // Also try queryByFlow for other possible fields
+            var grActAlt = queryByFlow(actTbl, targetFlowSysId, 'order');
+            if (grActAlt.hasNext()) {
+                grActions = grActAlt;
+                p('  (source: ' + actTbl + ' via queryByFlow)');
+                break;
+            }
+        }
+
+        // Fallback: try sys_hub_flow_logic_instance_v2
+        if (!grActions || !grActions.hasNext()) {
+            var grLogicV2 = new GlideRecord('sys_hub_flow_logic_instance_v2');
+            if (grLogicV2.isValid() && grLogicV2.isValidField('flow')) {
+                grLogicV2.addQuery('flow', targetFlowSysId);
+                grLogicV2.orderBy('order');
+                grLogicV2.query();
+                if (grLogicV2.hasNext()) {
+                    grActions = grLogicV2;
+                    p('  (source: sys_hub_flow_logic_instance_v2)');
+                }
+            }
+        }
+
+        while (grActions && grActions.next()) {
             actionCount++;
             var actionSysId = grActions.getUniqueValue();
-            var actionName = grActions.getValue('name') || '(unnamed)';
-            var actionType = grActions.getDisplayValue('action_type') || grActions.getValue('action_type') || '';
-            var actionTypeSysId = grActions.getValue('action_type') || '';
-            var nesting = grActions.getValue('nesting_level') || '0';
+            var actionName = grActions.getValue('name') || grActions.getDisplayValue('name') || '(unnamed)';
+            var actionType = grActions.getDisplayValue('action_type') || grActions.getValue('action_type') || 
+                             grActions.getDisplayValue('type') || grActions.getValue('type') || '';
+            var actionTypeSysId = grActions.getValue('action_type') || grActions.getValue('type') || '';
+            var nesting = grActions.getValue('nesting_level') || grActions.getValue('nesting') || '0';
             var parentAction = grActions.getValue('parent') || '';
 
             p('  ' + actionCount + '. [' + actionType + '] ' + actionName);
             p('     sys_id: ' + actionSysId);
-            p('     Order: ' + (grActions.getValue('order') || ''));
+            p('     Order: ' + (grActions.getValue('order') || grActions.getValue('position') || ''));
             if (nesting !== '0') p('     Nesting level: ' + nesting);
             if (parentAction) p('     Parent: ' + grActions.getDisplayValue('parent'));
+
+            // Dump all meaningful fields for this action
+            var actAllFields = grActions.getFields();
+            for (var aafi = 0; aafi < actAllFields.size(); aafi++) {
+                var aage = actAllFields.get(aafi);
+                var aafName = aage.getName();
+                var aafVal = aage.getValue() || '';
+                // Skip already-printed and system fields
+                if (!aafVal || aafVal === 'false' || aafVal === '0') continue;
+                if (aafName === 'name' || aafName === 'action_type' || aafName === 'type' || 
+                    aafName === 'order' || aafName === 'position' || aafName === 'nesting_level' || 
+                    aafName === 'parent' || aafName === 'flow' || aafName === 'nesting') continue;
+                if (aafName.indexOf('sys_') === 0) continue;
+                var aafDisplay = aage.getDisplayValue() || '';
+                if (aafVal.length > 500) {
+                    // Check if it's a compressed blob (base64+gzip) — skip silently
+                    if (/^[A-Za-z0-9+\/=\s]+$/.test(aafVal.substring(0, 100))) {
+                        // Compressed config blob — can't decode from background script
+                        continue;
+                    }
+                    // Other long value — likely a script
+                    p('     ' + aafName + ':');
+                    p('     ---- START ----');
+                    p(aafVal);
+                    p('     ---- END ----');
+                } else if (aafDisplay && aafDisplay !== aafVal) {
+                    p('     ' + aafName + ': ' + aafDisplay + ' [' + aafVal + ']');
+                } else {
+                    p('     ' + aafName + ': ' + aafVal);
+                }
+            }
 
             // Action condition
             if (grActions.getValue('condition')) {
@@ -1415,24 +1793,46 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             }
         }
 
-        // ── Flow Logic / Conditions (sys_hub_flow_logic) ─────────
-        var grLogic = new GlideRecord('sys_hub_flow_logic');
-        if (grLogic.isValid()) {
-            grLogic = queryByFlow('sys_hub_flow_logic', targetFlowSysId, 'order');
-            var logicCount = 0;
+        // ── Flow Logic / Conditions ─────────────────────────────
+        var logicTableCandidates = ['sys_hub_flow_logic_instance_v2', 'sys_hub_flow_logic'];
+        var logicCount = 0;
+        var logicUseful = 0; // count of nodes with actual readable data
+        for (var ltci = 0; ltci < logicTableCandidates.length && logicCount === 0; ltci++) {
+            var logicTbl = logicTableCandidates[ltci];
+            var grLogic = new GlideRecord(logicTbl);
+            if (!grLogic.isValid()) continue;
+            if (grLogic.isValidField('flow')) {
+                grLogic.addQuery('flow', targetFlowSysId);
+                grLogic.orderBy('order');
+                grLogic.query();
+            } else {
+                grLogic = queryByFlow(logicTbl, targetFlowSysId, 'order');
+            }
             while (grLogic.next()) {
-                if (logicCount === 0) p(subsection('FLOW LOGIC / CONDITIONS'));
                 logicCount++;
-                p('  ' + logicCount + '. Type: ' + (grLogic.getDisplayValue('type') || grLogic.getValue('type') || ''));
-                p('     Name: ' + (grLogic.getValue('name') || ''));
-                if (grLogic.getValue('condition')) p('     Condition: ' + grLogic.getValue('condition'));
-                if (grLogic.getValue('script')) {
-                    p('     SCRIPT:');
-                    p('     ---- SCRIPT START ----');
-                    p(grLogic.getValue('script'));
-                    p('     ---- SCRIPT END ----');
+                var logicType = grLogic.getDisplayValue('type') || grLogic.getValue('type') || '';
+                var logicName = grLogic.getValue('name') || '';
+                var logicCondition = grLogic.getValue('condition') || '';
+                var logicScript = grLogic.getValue('script') || '';
+                // Only print nodes that have meaningful data beyond just a ui_id
+                if (logicType || logicName || logicCondition || logicScript) {
+                    if (logicUseful === 0) p(subsection('FLOW LOGIC / CONDITIONS (from ' + logicTbl + ')'));
+                    logicUseful++;
+                    p('  ' + logicUseful + '. Type: ' + logicType);
+                    if (logicName) p('     Name: ' + logicName);
+                    if (logicCondition) p('     Condition: ' + logicCondition);
+                    if (logicScript) {
+                        p('     SCRIPT:');
+                        p('     ---- SCRIPT START ----');
+                        p(logicScript);
+                        p('     ---- SCRIPT END ----');
+                    }
+                    p('');
                 }
-                p('');
+            }
+            if (logicCount > 0 && logicUseful === 0) {
+                p(subsection('FLOW LOGIC'));
+                p('  (' + logicCount + ' flow logic nodes found, no readable conditions/scripts — config stored in compressed format)');
             }
         }
 
@@ -1444,7 +1844,10 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             while (grFlowVar.next()) {
                 if (varCount === 0) p(subsection('FLOW VARIABLES'));
                 varCount++;
-                p('  ' + varCount + '. ' + (grFlowVar.getValue('name') || '(unnamed)'));
+                var fvLabel = grFlowVar.getValue('label') || grFlowVar.getDisplayValue('label') || '';
+                var fvName = grFlowVar.getValue('name') || '';
+                p('  ' + varCount + '. ' + (fvLabel || fvName || '(unnamed)'));
+                if (fvLabel && fvName && fvName !== fvLabel) p('     Internal name: ' + fvName);
                 p('     Type: ' + (grFlowVar.getDisplayValue('type') || grFlowVar.getValue('type') || ''));
                 if (grFlowVar.getValue('value')) p('     Value: ' + grFlowVar.getValue('value'));
                 p('');
@@ -1786,21 +2189,47 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
 
     // ── 5. Activity details ──────────────────────────────────
+    //    When we have execution context, only show full details for
+    //    activities that actually ran. Skipped activities get a one-liner.
 
     p(section('ACTIVITY DETAILS' + depthLabel));
+
+    // If we're in context mode, list skipped activities first as a summary
+    if (targetContextId) {
+        var skippedActivities = [];
+        for (var ski = 0; ski < actList.length; ski++) {
+            if (!execByActivity[actList[ski].sys_id]) {
+                skippedActivities.push(actList[ski]);
+            }
+        }
+        if (skippedActivities.length > 0) {
+            p('\nSKIPPED ACTIVITIES (' + skippedActivities.length + ' not reached):');
+            for (var sai = 0; sai < skippedActivities.length; sai++) {
+                p('  - [' + skippedActivities[sai].type + '] ' + skippedActivities[sai].name);
+            }
+            p('');
+        }
+    }
 
     var subWorkflows = [];  // collect sub-workflow references for recursive extraction
     var flowDesignerRefs = [];  // collect Flow Designer flow references from workflow activities
 
     for (var di = 0; di < actList.length; di++) {
         var info = actList[di];
+
+        // Execution history (context mode only)
+        var execEntries = execByActivity[info.sys_id];
+
+        // In context mode, skip full details for activities that didn't execute
+        if (targetContextId && !execEntries) {
+            continue;  // already listed in SKIPPED ACTIVITIES summary above
+        }
+
         p(subsection(info.name + '  [' + info.type + ']'));
         p('sys_id: ' + info.sys_id);
         p('Position: x=' + info.x + ', y=' + info.y);
         if (info.stage) p('Stage: ' + info.stage);
 
-        // Execution history (context mode only)
-        var execEntries = execByActivity[info.sys_id];
         if (execEntries && execEntries.length > 0) {
             p('\nEXECUTION:');
             for (var ei = 0; ei < execEntries.length; ei++) {
@@ -1814,8 +2243,6 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 if (ex.fault)   p('    FAULT: ' + ex.fault);
                 if (ex.output)  p('    Output: ' + ex.output);
             }
-        } else if (targetContextId) {
-            p('\nEXECUTION: (not reached)');
         }
 
         // INPUT from orchestration activities
@@ -2089,11 +2516,12 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // Extract business rules, notifications, email actions, and emails for RITM
         var grRitmForEmail = new GlideRecord('sc_req_item');
         if (grRitmForEmail.get(grRitmRef.getUniqueValue())) {
-            extractBusinessRules('sc_req_item', grRitmForEmail.getUniqueValue());
+            var ritmSysIdForExtract = grRitmForEmail.getUniqueValue();
+            extractBusinessRules('sc_req_item', ritmSysIdForExtract);
             extractInboundEmailActions('sc_req_item');
-            extractNotifications('sc_req_item');
-            extractEmailScripts('sc_req_item', grRitmForEmail.getUniqueValue());
-            extractEmailAndNotificationAnalysis(grRitmForEmail.getUniqueValue(), 'sc_req_item', grRitmForEmail.getValue('number'));
+            var ritmMailScripts = extractNotifications('sc_req_item', ritmSysIdForExtract);
+            extractEmailScripts('sc_req_item', ritmSysIdForExtract, ritmMailScripts);
+            extractEmailAndNotificationAnalysis(ritmSysIdForExtract, 'sc_req_item', grRitmForEmail.getValue('number'));
         }
 
         // Extract each workflow context found for the RITM
@@ -2122,11 +2550,12 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         // Extract business rules, notifications, email actions, and emails for Incident
         var grIncForEmail = new GlideRecord('incident');
         if (grIncForEmail.get(grIncRef.getUniqueValue())) {
-            extractBusinessRules(incTable, grIncForEmail.getUniqueValue());
+            var incSysIdForExtract = grIncForEmail.getUniqueValue();
+            extractBusinessRules(incTable, incSysIdForExtract);
             extractInboundEmailActions(incTable);
-            extractNotifications(incTable);
-            extractEmailScripts(incTable, grIncForEmail.getUniqueValue());
-            extractEmailAndNotificationAnalysis(grIncForEmail.getUniqueValue(), incTable, grIncForEmail.getValue('number'));
+            var incMailScripts = extractNotifications(incTable, incSysIdForExtract);
+            extractEmailScripts(incTable, incSysIdForExtract, incMailScripts);
+            extractEmailAndNotificationAnalysis(incSysIdForExtract, incTable, grIncForEmail.getValue('number'));
         }
 
         // Extract each workflow context found for the Incident
