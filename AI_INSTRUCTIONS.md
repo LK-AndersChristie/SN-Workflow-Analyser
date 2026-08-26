@@ -6,16 +6,20 @@ These instructions are for AI agents (Copilot, ChatGPT, Claude, etc.) receiving 
 
 ## What you are receiving
 
-A **complete export** of a ServiceNow legacy workflow (Workflow Editor / `workflow_ide.do`), plus supporting automation analysis (business rules, notifications, emails), in one of four modes:
+A **complete export** of a ServiceNow legacy workflow (Workflow Editor / `workflow_ide.do`), plus supporting automation analysis (business rules, notifications, emails), in one of five modes:
 
-- **RITM mode** — a full RITM record export (details, variables, activity log, approvals, tasks, emails, notifications, business rules, inbound email actions) plus all workflow executions associated with that RITM
+- **RITM mode** — a full RITM record export (details, variables, activity log, approvals, tasks, emails, notifications, business rules, inbound email actions, catalog item definition) plus all workflow executions associated with that RITM
 - **Incident mode** — a full Incident record export (details, variables, activity log, approvals, tasks, emails, notifications, business rules, inbound email actions) plus all workflow executions associated with that incident
+- **Catalog item mode** — a full catalog item definition (variables, variable sets, UI policies, client scripts, UI actions) plus the associated workflow or Flow Designer flow
+- **Flow Designer mode** — a complete Flow Designer flow definition (trigger, actions, subflows, inputs/outputs, scripts, variables)
 - **Context mode** — an executed workflow with definition + execution data (which activities ran, when, their results, faults, scratchpad state, and the triggering record)
 - **Definition mode** — a workflow template (activities, transitions, scripts, config) without execution data
 
 The mode is indicated in the header:
 - `SERVICENOW RITM + WORKFLOW EXPORT` — RITM mode
 - `SERVICENOW INCIDENT + WORKFLOW EXPORT` — Incident mode
+- `SERVICENOW CATALOG ITEM EXPORT` — catalog item mode
+- `SERVICENOW FLOW DESIGNER EXPORT` — Flow Designer mode
 - `SERVICENOW WORKFLOW EXECUTION EXPORT` — context mode
 - `SERVICENOW WORKFLOW EXPORT` — definition mode
 
@@ -24,6 +28,7 @@ The mode is indicated in the header:
 Contents:
 
 - **RITM record details** *(RITM mode only)* — number, state, stage, approval status, assigned to, opened by, cat item, description
+- **RITM custom fields** *(RITM mode only)* — all `u_*` custom fields with non-empty values
 - **RITM variables** *(RITM mode only)* — all catalog variable name/value pairs from the request
 - **Activity log / journal** *(RITM mode only)* — all journal entries (work notes, comments, orchestration messages) in chronological order
 - **Approval history** *(RITM mode only)* — approver, state, comments, timestamps
@@ -32,11 +37,12 @@ Contents:
 - **Related changes** *(Incident mode only)* — all linked `change_request` records (for incidents)
 - **Emails sent** *(RITM & Incident mode only)* — all emails sent for the record with subject, recipients, CC, creation time
 - **Email watchers** *(RITM & Incident mode only)* — users subscribed to record updates via `sys_watchers`
-- **Notification definitions** *(RITM & Incident mode only)* — all active `sysevent_email_action` records showing when notifications fire, recipients, subjects, and message body content
-- **Business rules** *(RITM & Incident mode only)* — all active `sys_business_rule` records for the table showing when they fire, priorities, conditions, and full script content
+- **Notification definitions** *(RITM & Incident mode only)* — `sysevent_email_action` records that actually fired for this record (unfired notifications are omitted with a count)
+- **Business rules** *(RITM & Incident mode only)* — active `sys_script` records for the table (empty/no-op rules filtered out) showing when they fire, priorities, conditions, and full script content
 - **Inbound email actions** *(RITM & Incident mode only)* — all active `sysevent_in_email_action` records showing how incoming emails are processed on the table
-- **Email scripts/templates** *(RITM & Incident mode only)* — all `sys_email_script` records showing template content for email notifications
+- **Email scripts/templates** *(RITM & Incident mode only)* — `sys_script_email` records referenced via `${mail_script:...}` in fired notifications
 - **Email correlation** *(RITM & Incident mode only)* — analysis showing which notification triggered each email sent (linking `sys_email` to `sysevent_email_action`)
+- **Catalog item definition** *(RITM & Catalog item mode)* — full catalog item metadata, variables, variable sets, UI policies (with actions and scripts), client scripts (item-level and variable-set-level), and UI actions
 - **Attachments** *(RITM & Incident mode only)* — files attached to the record (names, sizes, content types)
 - **Workflow contexts** *(RITM & Incident mode only)* — list of all `wf_context` records, each extracted in full
 - **Execution context** *(context/RITM mode)* — overall state (Executing/Finished/Cancelled), start/end times, the triggering record, and scratchpad
@@ -45,6 +51,7 @@ Contents:
 - **Activity index** — numbered list of all nodes sorted by canvas position
 - **Transitions** — every connection between nodes, with condition labels (`Always`, `Yes`, `No`, `Success`, `Failure`, `Policy Failure`)
 - **Activity details** — for each node: type, sys_id, position, stage, all configuration content, execution data (if context/RITM mode), orchestration config (MID server, credential alias, category), and orchestration scripts (PowerShell/SSH steps from `sa_step`)
+- **Referenced Script Includes** — auto-extracted from `sys_script_include` for any custom class instantiated via `new ClassName()` in workflow scripts (built-in SN/JS classes excluded)
 
 ## Output format
 
@@ -274,6 +281,106 @@ WORKFLOW CONTEXTS FOR INC0043257
 
 ################################################################################
 WORKFLOW CONTEXT 1 OF N FOR INCIDENT
+################################################################################
+(full workflow extraction follows — same format as context mode below)
+```
+
+### Catalog item mode header (when input is a catalog item sys_id)
+
+```
+================================================================================
+SERVICENOW CATALOG ITEM EXPORT
+Extracted: 2026-06-04 10:08:52
+Detected type: Catalog Item (sc_cat_item)
+================================================================================
+
+================================================================================
+CATALOG ITEM: Item Name
+================================================================================
+sys_id: xxx
+Name: Item Name
+Short description: ...
+Active: true
+Category: ...
+Workflow: Workflow Name
+Flow Designer flow: Flow Name
+...
+
+DESCRIPTION:
+(item description)
+
+------------------------------------------------------------
+CATALOG ITEM VARIABLES
+------------------------------------------------------------
+  1. Variable Label
+     Name: variable_name
+     Type: String
+     Order: 100
+     Mandatory: true
+     Default: default_value
+     ...
+
+------------------------------------------------------------
+VARIABLE SETS
+------------------------------------------------------------
+  1. Variable Set Name
+     sys_id: xxx
+     Internal name: set_name
+     Type: ...
+     1. Variable Label
+        Name: var_name
+        Type: Reference
+        Reference: sys_user
+     ...
+
+------------------------------------------------------------
+UI POLICIES
+------------------------------------------------------------
+  1. Policy Description
+     Active: true
+     Order: 100
+     Conditions: (encoded query on catalog variables)
+     Reverse if false: true
+     Action 1: Variable: variable_name
+       Mandatory: true
+       Visible: true
+     ...
+
+------------------------------------------------------------
+CLIENT SCRIPTS
+------------------------------------------------------------
+  1. Script Name
+     Active: true
+     Type: onChange
+     Variable: variable_name
+     ---- SCRIPT START ----
+     (client-side JavaScript)
+     ---- SCRIPT END ----
+     ...
+
+------------------------------------------------------------
+CLIENT SCRIPTS (from Variable Sets)
+------------------------------------------------------------
+  1. VS Script Name
+     Variable set: Set Name
+     Type: onLoad
+     ---- SCRIPT START ----
+     (script)
+     ---- SCRIPT END ----
+     ...
+
+------------------------------------------------------------
+UI POLICIES (from Variable Sets)
+------------------------------------------------------------
+  ...
+
+------------------------------------------------------------
+UI ACTIONS
+------------------------------------------------------------
+  ...
+
+################################################################################
+WORKFLOW FOR CATALOG ITEM
 ################################################################################
 (full workflow extraction follows — same format as context mode below)
 ```
@@ -563,6 +670,42 @@ When analyzing RITM or Incident exports, you also receive:
 - Each context is extracted in full with its own activity index, transitions, and execution history
 - Compare execution timestamps across contexts to understand the order of operations
 
+### Step 9: Analyze catalog item definition (RITM and Catalog item mode)
+
+When the export includes a `CATALOG ITEM` section (from RITM or direct catalog item input):
+
+**Variables section:**
+- Lists all form fields the requester fills out when ordering the catalog item
+- **Type** indicates the field type — `String`, `Reference`, `Select Box`, `CheckBox`, `Multi Line Text`, etc.
+- **Mandatory** variables must be filled in before the form can be submitted
+- **Reference** variables point to another table (e.g., `sys_user`) — the **reference qual** filters which records are available
+- **Dynamic reference qual** and **Dynamic default value** contain scripts that run client-side to compute values
+
+**Variable Sets:**
+- Reusable groups of variables shared across multiple catalog items
+- If the same variable set appears on multiple items, changes to it affect all items
+
+**UI Policies:**
+- Control client-side form behavior — show/hide fields, make fields mandatory/read-only based on other field values
+- **Conditions** use encoded query syntax on variable names (e.g., `type=hardware^EQ`)
+- **Reverse if false** means the opposite actions are applied when conditions don't match
+- **Actions** specify per-variable changes: `visible=true/false`, `mandatory=true/false`, `read_only=true/false`
+- **Scripts** (when `run_scripts=true`) provide advanced logic beyond simple field actions
+- Also includes UI policies from attached variable sets
+
+**Client Scripts:**
+- Client-side JavaScript that runs in the user's browser
+- **onChange** — fires when a specific variable's value changes
+- **onLoad** — fires when the form loads
+- **onSubmit** — fires when the form is submitted (can prevent submission by returning `false`)
+- Also includes client scripts from attached variable sets
+
+**How to use this for analysis:**
+1. **Understand the form** — variables + UI policies + client scripts together define the user experience when ordering the item
+2. **Trace field dependencies** — UI policies and onChange client scripts show which fields affect other fields
+3. **Check validation logic** — onSubmit scripts and mandatory flags determine what the user must fill in
+4. **Map variables to workflow** — workflow scripts reference variables by their internal `name` (e.g., `current.variables.u_fornavn`) — match these to the variable definitions to understand data flow
+
 ---
 
 ## What to do if the user also provides manual tab exports
@@ -594,15 +737,22 @@ If a Value column is empty, that input is **not mapped** and the PowerShell vari
 - **`sc_item_option`** — Individual catalog variable value records
 - **`incident`** — Incident record
 - **`incident_task`** — Incident task (child of incident)
+- **`question_answer`** — Incident variables (form field answers)
 - **`change_request`** — Change request (may be related to incidents)
-- **`cmn_form_field_value`** — Form field values (incident/RITM variables)
+- **`sc_cat_item`** — Service Catalog Item (the catalog item definition ordered via a RITM)
+- **`item_option_new`** — Catalog item variable definitions (form fields on the catalog item)
+- **`io_set_item`** — M2M table linking variable sets to catalog items
+- **`item_option_new_set`** — Variable set definitions (reusable groups of variables)
+- **`catalog_ui_policy`** — UI policies for catalog items (client-side form behavior)
+- **`catalog_ui_policy_action`** — Actions for catalog UI policies (visibility, mandatory, read-only per variable)
+- **`catalog_script_client`** — Client scripts for catalog items (onChange, onLoad, onSubmit)
 - **`sys_user`** — User record
 - **`sys_user_group`** — Group record
 - **`sys_user_grmember`** — Group membership (M2M)
-- **`sys_business_rule`** — Business rules (automated actions that fire on insert/update/delete)
+- **`sys_script`** — Business rules (the actual table behind `sys_business_rule`; automated actions that fire on insert/update/delete)
 - **`sysevent_in_email_action`** — Inbound email actions (automated processing of incoming emails)
 - **`sysevent_email_action`** — Notification definitions (email triggers and templates)
-- **`sys_email_script`** — Email scripts (reusable template includes for notifications)
+- **`sys_script_email`** — Email scripts (reusable template includes for notifications, referenced via `${mail_script:name}`)
 - **`sys_email`** — Email records (history of emails sent)
 - **`sys_watchers`** / **`sys_watch_2`** — Email watchers/subscribers (who receives updates on a record)
 - **`wf_context`** — Workflow execution context (links a workflow version to a specific record run)
@@ -615,10 +765,12 @@ If a Value column is empty, that input is **not mapped** and the PowerShell vari
 - **`sc_task`** — Catalog Task (child tasks spawned by the workflow)
 - **`sys_email`** — Email records (notifications sent for a record)
 - **`sys_attachment`** — File attachments on a record
+- **`sys_script_include`** — Script Includes (reusable server-side classes, auto-extracted when referenced in workflow scripts)
 - **`sa_pattern`** — Orchestration pattern (links activity definitions to script steps)
 - **`sa_step`** — Orchestration step (contains the actual PowerShell/SSH script executed on MID server)
 - **`wf_stage`** — Workflow stage definitions
 - **`wf_activity_definition`** — Activity definition template (MID server, credential, category)
+- **`sys_ui_action`** — UI actions (buttons, links, context menu items on forms)
 - **`workflow.scratchpad`** — Runtime key-value store shared across activities in a workflow execution
 - **`data.get(N)`** — Databus: access results from activity at positional index N
 - **`current`** — The record the workflow is running on

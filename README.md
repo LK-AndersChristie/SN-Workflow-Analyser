@@ -17,21 +17,24 @@ All scripts run in **Scripts - Background** (`/sys.scripts.do`).
 - Includes execution history with per-activity timing, results, and faults
 - Extracts orchestration scripts (PowerShell/SSH from `sa_step`) that run on the MID Server
 - Shows MID Server and credential alias per orchestration activity
+- Auto-extracts referenced Script Includes (`sys_script_include`) from workflow scripts
 - Follows sub-workflows recursively (up to 10 levels deep)
 - Supports Flow Designer flows (`sys_hub_flow`) — triggers, actions, subflows, inputs/outputs, scripts
-- For RITMs & Incidents: extracts record details, variables, journal entries, approval history, tasks, attachments
-- For RITMs & Incidents: email & notification analysis — all emails sent, which notifications triggered them, email watchers/subscribers
-- For RITMs & Incidents: business rules — all active rules for the table with full scripts and conditions
+- For RITMs & Incidents: extracts record details, variables, custom fields (`u_*`), journal entries, approval history, tasks, attachments
+- For RITMs & Incidents: email & notification analysis — emails sent, which notifications triggered them, email watchers/subscribers
+- For RITMs & Incidents: business rules — active rules for the table (empty/no-op rules filtered out)
 - For RITMs & Incidents: inbound email actions — email processing scripts configured for the table
+- For RITMs & catalog items: catalog item definition — variables, variable sets, UI policies, client scripts, UI actions
 
 **Supported inputs:**
 
 | Input | Example |
-|-------|---------|
+|-------|--------|
 | RITM number | `RITM0043257` |
 | RITM sys_id | 32-char hex from `sc_req_item` |
 | INC number | `INC0043257` |
 | Incident sys_id | 32-char hex from `incident` |
+| Catalog item sys_id | 32-char hex from `sc_cat_item` |
 | Flow Designer flow sys_id | 32-char hex from `sys_hub_flow` |
 | Flow Designer flow name | `"My Flow Name"` |
 | Workflow context sys_id | From "Show Workflow" URL (`sysparm_context=...`) |
