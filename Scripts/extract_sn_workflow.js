@@ -77,6 +77,11 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     function p(text) {
         gs.print(text);
     }
+    // getValue() on boolean fields returns '1'/'0' in some scopes, 'true'/'false' in others
+    function isTrue(gr, field) {
+        var v = gr.getValue(field);
+        return v === 'true' || v === '1';
+    }
 
     // sys_email is a rotated/partitioned table in SN. Queries against it
     // produce slow-query SQL debug output that leaks into gs.print.
@@ -881,9 +886,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             p('     Name: ' + (grItemOpt.getValue('name') || ''));
             p('     Type: ' + grItemOpt.getDisplayValue('type'));
             p('     Order: ' + (grItemOpt.getValue('order') || ''));
-            if (grItemOpt.getValue('mandatory') === 'true') p('     Mandatory: true');
-            if (grItemOpt.getValue('read_only') === 'true') p('     Read only: true');
-            if (grItemOpt.getValue('hidden') === 'true') p('     Hidden: true');
+            if (isTrue(grItemOpt, 'mandatory')) p('     Mandatory: true');
+            if (isTrue(grItemOpt, 'read_only')) p('     Read only: true');
+            if (isTrue(grItemOpt, 'hidden')) p('     Hidden: true');
             if (grItemOpt.getValue('default_value')) p('     Default: ' + grItemOpt.getValue('default_value'));
             if (grItemOpt.getValue('reference')) p('     Reference: ' + grItemOpt.getValue('reference'));
             if (grItemOpt.getValue('reference_qual')) p('     Reference qual: ' + grItemOpt.getValue('reference_qual'));
@@ -938,8 +943,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 p('     ' + setVarCount + '. ' + (grSetVars.getValue('question_text') || grSetVars.getValue('name') || ''));
                 p('        Name: ' + (grSetVars.getValue('name') || ''));
                 p('        Type: ' + grSetVars.getDisplayValue('type'));
-                if (grSetVars.getValue('mandatory') === 'true') p('        Mandatory: true');
-                if (grSetVars.getValue('read_only') === 'true') p('        Read only: true');
+                if (isTrue(grSetVars, 'mandatory')) p('        Mandatory: true');
+                if (isTrue(grSetVars, 'read_only')) p('        Read only: true');
                 if (grSetVars.getValue('default_value')) p('        Default: ' + grSetVars.getValue('default_value'));
                 if (grSetVars.getValue('reference')) p('        Reference: ' + grSetVars.getValue('reference'));
             }
@@ -949,6 +954,28 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         if (setCount === 0) p('  (no variable sets found)');
 
         // ── UI Policies (catalog_ui_policy) ──────────────────────
+
+        // catalog_ui_policy_action.catalog_variable holds 'IO:<sys_id>' rather than the variable name
+        function resolveVarName(rawVal) {
+            if (!rawVal) return '';
+            var id = rawVal.indexOf('IO:') === 0 ? rawVal.substring(3) : rawVal;
+            var grIo = new GlideRecord('item_option_new');
+            if (!grIo.get(id)) return rawVal;
+            var label = grIo.getValue('question_text') || '';
+            var nm = grIo.getValue('name') || '';
+            var out = nm || id;
+            if (label) out += ' (' + label + ')';
+            if (isTrue(grIo, 'mandatory')) out += ' [variable-level Mandatory: true]';
+            return out;
+        }
+
+        function printAppliesOn(gr) {
+            p('     Applies on Catalog Item view: ' + isTrue(gr, 'applies_catalog'));
+            p('     Applies on Requested Items: ' + isTrue(gr, 'applies_req_item'));
+            p('     Applies on Catalog Tasks: ' + isTrue(gr, 'applies_sc_task'));
+            p('     Applies on Target Record: ' + isTrue(gr, 'applies_target_record'));
+        }
+
         p(subsection('UI POLICIES'));
         var grUip = new GlideRecord('catalog_ui_policy');
         grUip.addQuery('catalog_item', catItemSysId);
@@ -963,14 +990,15 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             p('     Active: ' + grUip.getValue('active'));
             p('     Order: ' + (grUip.getValue('order') || ''));
             p('     Applies to: ' + (grUip.getDisplayValue('applies_to') || 'item'));
-            if (grUip.getValue('on_load') === 'true') p('     On load: true');
-            if (grUip.getValue('reverse_if_false') === 'true') p('     Reverse if false: true');
-            if (grUip.getValue('global') === 'true') p('     Global: true');
+            printAppliesOn(grUip);
+            if (isTrue(grUip, 'on_load')) p('     On load: true');
+            if (isTrue(grUip, 'reverse_if_false')) p('     Reverse if false: true');
+            if (isTrue(grUip, 'global')) p('     Global: true');
             if (grUip.getValue('catalog_conditions')) p('     Conditions: ' + grUip.getValue('catalog_conditions'));
             if (grUip.getValue('applies_to_set')) p('     Variable set: ' + grUip.getDisplayValue('applies_to_set'));
 
             // Script (if run scripts is enabled)
-            if (grUip.getValue('run_scripts') === 'true') {
+            if (isTrue(grUip, 'run_scripts')) {
                 if (grUip.getValue('script_true')) {
                     p('     EXECUTE IF TRUE:');
                     p('     ---- SCRIPT START ----');
@@ -992,7 +1020,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             var actionCount = 0;
             while (grUipa.next()) {
                 actionCount++;
-                var varName = grUipa.getDisplayValue('catalog_variable') || grUipa.getValue('catalog_variable') || '';
+                var varName = resolveVarName(grUipa.getValue('catalog_variable'));
                 p('     Action ' + actionCount + ': Variable: ' + varName);
                 if (grUipa.getValue('mandatory') && grUipa.getValue('mandatory') !== 'leave_alone') {
                     p('       Mandatory: ' + grUipa.getValue('mandatory'));
@@ -1006,7 +1034,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 if (grUipa.getValue('disabled') && grUipa.getValue('disabled') !== 'leave_alone') {
                     p('       Disabled: ' + grUipa.getValue('disabled'));
                 }
-                if (grUipa.getValue('cleared') === 'true') p('       Cleared: true');
+                if (isTrue(grUipa, 'cleared')) p('       Cleared: true');
             }
             p('');
         }
@@ -1098,10 +1126,11 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 var vsUipId = grVsUip.getUniqueValue();
                 p('  ' + vsUipCount + '. ' + (grVsUip.getValue('short_description') || '(unnamed)'));
                 p('     Variable set: ' + grVsUip.getDisplayValue('variable_set'));
+                printAppliesOn(grVsUip);
                 if (grVsUip.getValue('catalog_conditions')) p('     Conditions: ' + grVsUip.getValue('catalog_conditions'));
-                if (grVsUip.getValue('on_load') === 'true') p('     On load: true');
-                if (grVsUip.getValue('reverse_if_false') === 'true') p('     Reverse if false: true');
-                if (grVsUip.getValue('run_scripts') === 'true') {
+                if (isTrue(grVsUip, 'on_load')) p('     On load: true');
+                if (isTrue(grVsUip, 'reverse_if_false')) p('     Reverse if false: true');
+                if (isTrue(grVsUip, 'run_scripts')) {
                     if (grVsUip.getValue('script_true')) {
                         p('     EXECUTE IF TRUE:');
                         p('     ---- SCRIPT START ----');
@@ -1121,7 +1150,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 var vsActionCount = 0;
                 while (grVsUipa.next()) {
                     vsActionCount++;
-                    var vsVarName = grVsUipa.getDisplayValue('catalog_variable') || grVsUipa.getValue('catalog_variable') || '';
+                    var vsVarName = resolveVarName(grVsUipa.getValue('catalog_variable'));
                     p('     Action ' + vsActionCount + ': Variable: ' + vsVarName);
                     if (grVsUipa.getValue('mandatory') && grVsUipa.getValue('mandatory') !== 'leave_alone') p('       Mandatory: ' + grVsUipa.getValue('mandatory'));
                     if (grVsUipa.getValue('visible') && grVsUipa.getValue('visible') !== 'leave_alone') p('       Visible: ' + grVsUipa.getValue('visible'));
