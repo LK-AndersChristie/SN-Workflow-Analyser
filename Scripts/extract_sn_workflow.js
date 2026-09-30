@@ -21,6 +21,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
  *      - a RITM sys_id              (sc_req_item record)
  *      - an INC number              (e.g. INC0043257)
  *      - an Incident sys_id         (incident record)
+ *      - a catalog item sys_id      (sc_cat_item record)
  *      - a Flow Designer flow sys_id (from sys_hub_flow)
  *      - a Flow Designer flow name   (e.g. "My Flow Name")
  *      The script will auto-detect which one it is.
@@ -47,6 +48,10 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
  *           contexts, business rules, inbound email actions, notification
  *           definitions, email scripts/templates, and email correlation
  *           analysis (showing which notifications/rules triggered emails).
+ *           For catalog items (sc_cat_item): full item metadata, variables,
+ *           variable sets, UI policies, client scripts, UI actions,
+ *           record producer script, user criteria, execution plan tasks,
+ *           and the associated workflow/flow definition.
  *
  * SOURCE: Activity config is stored in sys_variable_value (EAV pattern),
  *         not on wf_activity fields directly.
@@ -72,6 +77,11 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
     function p(text) {
         gs.print(text);
+    }
+    // getValue() on boolean fields returns '1'/'0' in some scopes, 'true'/'false' in others
+    function isTrue(gr, field) {
+        var v = gr.getValue(field);
+        return v === 'true' || v === '1';
     }
 
     // sys_email is a rotated/partitioned table in SN. Queries against it
@@ -155,6 +165,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         p('    incident sys_id                                   (incident)');
         p('    sys_hub_flow sys_id                               (Flow Designer flow)');
         p('    Flow name (e.g. "My Flow")                        (Flow Designer flow by name)');
+        p('    sc_cat_item sys_id                                 (catalog item definition)');
         return;
     }
 
@@ -239,9 +250,33 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             if (!optRef) continue;
             var grOptVal = new GlideRecord('sc_item_option');
             if (grOptVal.get(optRef)) {
-                var itemOptName = grOptVal.getDisplayValue('item_option_new') || grOptVal.getValue('item_option_new') || '(unknown)';
+                var itemOptDefId = grOptVal.getValue('item_option_new') || '';
+                var itemOptName = grOptVal.getDisplayValue('item_option_new') || itemOptDefId || '(unknown)';
                 var itemOptVal = grOptVal.getValue('value') || '';
-                p('  ' + itemOptName + ': ' + itemOptVal);
+                var varType = '';
+                var varInternalName = '';
+                var varRefTable = '';
+                var grVarDef = new GlideRecord('item_option_new');
+                if (itemOptDefId && grVarDef.get(itemOptDefId)) {
+                    varType = grVarDef.getDisplayValue('type') || '';
+                    varInternalName = grVarDef.getValue('name') || '';
+                    varRefTable = grVarDef.getValue('reference') || grVarDef.getValue('lookup_table') || '';
+                    if (grVarDef.getValue('question_text')) itemOptName = grVarDef.getValue('question_text');
+                }
+                // Resolve reference/lookup sys_ids to something human-readable
+                var resolved = '';
+                if (varRefTable && itemOptVal && itemOptVal.length === 32) {
+                    var grRefRec = new GlideRecord(varRefTable);
+                    if (grRefRec.isValid() && grRefRec.get(itemOptVal)) {
+                        resolved = grRefRec.getDisplayValue();
+                    }
+                }
+                p('  ' + itemOptName + ': ' + itemOptVal + (resolved ? '  → ' + resolved : ''));
+                var meta = [];
+                if (varInternalName && varInternalName !== itemOptName) meta.push('name=' + varInternalName);
+                if (varType) meta.push('type=' + varType);
+                if (varRefTable) meta.push('ref=' + varRefTable);
+                if (meta.length > 0) p('      [' + meta.join(', ') + ']');
                 varCount++;
             }
         }
@@ -428,6 +463,40 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                     p('  Flow run: ' + grFlowRun.getUniqueValue() + '  State: ' + fRunState + '  Flow: ' + fRunFlowName);
                     if (fRunFlowId) {
                         ritmFlows.push(fRunFlowId);
+                    }
+                }
+            }
+        }
+        // Fall back to the RITM's own flow_context reference
+        if (ritmFlows.length === 0 && grRitm.getValue('flow_context')) {
+            var ritmFlowCtxId = grRitm.getValue('flow_context');
+            var flowCtxTables = ['sys_flow_context', 'sys_hub_flow_context', 'sys_hub_flow_run'];
+            for (var fcti = 0; fcti < flowCtxTables.length; fcti++) {
+                var grFcRef = new GlideRecord(flowCtxTables[fcti]);
+                if (!grFcRef.isValid()) continue;
+                if (grFcRef.get(ritmFlowCtxId)) {
+                    var fcFlowId = grFcRef.getValue('flow') || '';
+                    p('  Flow run: ' + ritmFlowCtxId + '  State: ' +
+                      (grFcRef.getDisplayValue('state') || grFcRef.getValue('state') || '') +
+                      '  Flow: ' + (grFcRef.getDisplayValue('flow') || ''));
+                    p('    (resolved via sc_req_item.flow_context in ' + flowCtxTables[fcti] + ')');
+                    if (fcFlowId) ritmFlows.push(fcFlowId);
+                    break;
+                }
+            }
+            // Last resort: the flow_context display value is the flow name
+            if (ritmFlows.length === 0) {
+                var flowCtxName = grRitm.getDisplayValue('flow_context') || '';
+                if (flowCtxName) {
+                    var grFlowByName = new GlideRecord('sys_hub_flow');
+                    if (grFlowByName.isValid()) {
+                        grFlowByName.addQuery('name', flowCtxName);
+                        grFlowByName.setLimit(1);
+                        grFlowByName.query();
+                        if (grFlowByName.next()) {
+                            p('  Flow resolved by name from flow_context: ' + flowCtxName);
+                            ritmFlows.push(grFlowByName.getUniqueValue());
+                        }
                     }
                 }
             }
@@ -801,6 +870,480 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         }
     }
 
+    // ── Catalog Item extraction helper ────────────────────────
+    //    Extracts full catalog item definition including variables,
+    //    variable sets, UI policies, client scripts, and UI actions.
+
+    function extractCatalogItem(catItemSysId) {
+        var grCat = new GlideRecord('sc_cat_item');
+        if (!grCat.get(catItemSysId)) {
+            p('  (catalog item ' + catItemSysId + ' not found)');
+            return;
+        }
+
+        p(section('CATALOG ITEM: ' + grCat.getValue('name')));
+        p('sys_id: ' + catItemSysId);
+        p('Name: ' + grCat.getValue('name'));
+        if (grCat.getValue('short_description')) p('Short description: ' + grCat.getValue('short_description'));
+        p('Active: ' + grCat.getValue('active'));
+        p('Category: ' + (grCat.getDisplayValue('category') || ''));
+        p('Catalogs: ' + (grCat.getDisplayValue('sc_catalogs') || ''));
+        if (grCat.getValue('delivery_plan')) p('Execution plan: ' + grCat.getDisplayValue('delivery_plan'));
+        if (grCat.getValue('workflow')) p('Workflow: ' + grCat.getDisplayValue('workflow'));
+        if (grCat.getValue('flow_designer_flow')) p('Flow Designer flow: ' + grCat.getDisplayValue('flow_designer_flow'));
+        if (grCat.getValue('group')) p('Fulfillment group: ' + grCat.getDisplayValue('group'));
+        if (grCat.getValue('fulfillment_automation_level')) p('Fulfillment automation: ' + grCat.getDisplayValue('fulfillment_automation_level'));
+        if (grCat.getValue('template')) p('Template: ' + grCat.getDisplayValue('template'));
+        if (grCat.getValue('roles')) p('Roles: ' + grCat.getValue('roles'));
+        if (grCat.getValue('type')) p('Type: ' + grCat.getDisplayValue('type'));
+        if (grCat.getValue('ordered_item_link')) p('Ordered item link: ' + grCat.getValue('ordered_item_link'));
+        p('Scope: ' + (grCat.getDisplayValue('sys_scope') || 'Global'));
+        if (grCat.getValue('availability')) p('Availability: ' + grCat.getDisplayValue('availability'));
+        if (grCat.getValue('price') && grCat.getValue('price') !== '0') p('Price: ' + grCat.getValue('price'));
+        if (grCat.getValue('recurring_price') && grCat.getValue('recurring_price') !== '0') p('Recurring price: ' + grCat.getValue('recurring_price'));
+        if (grCat.getValue('recurring_frequency')) p('Recurring frequency: ' + grCat.getDisplayValue('recurring_frequency'));
+        if (grCat.getValue('delivery_time')) p('Delivery time: ' + grCat.getDisplayValue('delivery_time'));
+        if (grCat.getValue('sys_class_name') && grCat.getValue('sys_class_name') !== 'sc_cat_item') {
+            p('Class: ' + grCat.getValue('sys_class_name'));
+        }
+        if (grCat.getValue('description')) {
+            p('\nDESCRIPTION:');
+            p(grCat.getValue('description'));
+        }
+
+        // ── Custom fields ────────────────────────────────────────
+        var catCustomCount = 0;
+        var catFields = grCat.getFields();
+        for (var cfi = 0; cfi < catFields.size(); cfi++) {
+            var cge = catFields.get(cfi);
+            var cfName = cge.getName();
+            if (cfName.indexOf('u_') === 0) {
+                var cVal = grCat.getValue(cfName) || '';
+                var cDispVal = grCat.getDisplayValue(cfName) || '';
+                if (cVal || cDispVal) {
+                    if (catCustomCount === 0) p(subsection('CUSTOM FIELDS'));
+                    var cLabel = cge.getLabel() || cfName;
+                    p('  ' + cLabel + ': ' + (cDispVal || cVal));
+                    catCustomCount++;
+                }
+            }
+        }
+        if (catCustomCount === 0) {
+            p(subsection('CUSTOM FIELDS'));
+            p('  (no custom fields with values)');
+        }
+
+        // ── Variables (item_option_new) ──────────────────────────
+        p(subsection('CATALOG ITEM VARIABLES'));
+        var grItemOpt = new GlideRecord('item_option_new');
+        grItemOpt.addQuery('cat_item', catItemSysId);
+        grItemOpt.orderBy('order');
+        grItemOpt.query();
+        var catVarCount = 0;
+        while (grItemOpt.next()) {
+            catVarCount++;
+            p('  ' + catVarCount + '. ' + (grItemOpt.getValue('question_text') || grItemOpt.getValue('name') || '(unnamed)'));
+            p('     Name: ' + (grItemOpt.getValue('name') || ''));
+            p('     Type: ' + grItemOpt.getDisplayValue('type'));
+            p('     Order: ' + (grItemOpt.getValue('order') || ''));
+            if (isTrue(grItemOpt, 'mandatory')) p('     Mandatory: true');
+            if (isTrue(grItemOpt, 'read_only')) p('     Read only: true');
+            if (isTrue(grItemOpt, 'hidden')) p('     Hidden: true');
+            if (grItemOpt.getValue('default_value')) p('     Default: ' + grItemOpt.getValue('default_value'));
+            if (grItemOpt.getValue('reference')) p('     Reference: ' + grItemOpt.getValue('reference'));
+            if (grItemOpt.getValue('reference_qual')) p('     Reference qual: ' + grItemOpt.getValue('reference_qual'));
+            if (grItemOpt.getValue('lookup_label')) p('     Lookup label: ' + grItemOpt.getValue('lookup_label'));
+            if (grItemOpt.getValue('lookup_value')) p('     Lookup value: ' + grItemOpt.getValue('lookup_value'));
+            if (grItemOpt.getValue('choice_table')) p('     Choice table: ' + grItemOpt.getValue('choice_table'));
+            if (grItemOpt.getValue('choice_field')) p('     Choice field: ' + grItemOpt.getValue('choice_field'));
+            if (grItemOpt.getValue('dynamic_ref_qual')) {
+                p('     Dynamic reference qual:');
+                p('     ---- SCRIPT START ----');
+                p(grItemOpt.getValue('dynamic_ref_qual'));
+                p('     ---- SCRIPT END ----');
+            }
+            if (grItemOpt.getValue('dynamic_default_value')) {
+                p('     Dynamic default value:');
+                p('     ---- SCRIPT START ----');
+                p(grItemOpt.getValue('dynamic_default_value'));
+                p('     ---- SCRIPT END ----');
+            }
+            if (grItemOpt.getValue('variable_set')) p('     Variable set: ' + grItemOpt.getDisplayValue('variable_set'));
+            p('');
+        }
+        if (catVarCount === 0) p('  (no variables found)');
+
+        // ── Variable Sets ────────────────────────────────────────
+        p(subsection('VARIABLE SETS'));
+        var grSetItem = new GlideRecord('io_set_item');
+        grSetItem.addQuery('sc_cat_item', catItemSysId);
+        grSetItem.orderBy('order');
+        grSetItem.query();
+        var setCount = 0;
+        while (grSetItem.next()) {
+            var setId = grSetItem.getValue('variable_set');
+            if (!setId) continue;
+            var grSet = new GlideRecord('item_option_new_set');
+            if (!grSet.get(setId)) continue;
+            setCount++;
+            p('  ' + setCount + '. ' + (grSet.getValue('title') || grSet.getValue('name') || '(unnamed)'));
+            p('     sys_id: ' + setId);
+            p('     Internal name: ' + (grSet.getValue('internal_name') || ''));
+            p('     Type: ' + (grSet.getDisplayValue('type') || ''));
+            if (grSet.getValue('description')) p('     Description: ' + grSet.getValue('description'));
+
+            // Variables in this set
+            var grSetVars = new GlideRecord('item_option_new');
+            grSetVars.addQuery('variable_set', setId);
+            grSetVars.orderBy('order');
+            grSetVars.query();
+            var setVarCount = 0;
+            while (grSetVars.next()) {
+                setVarCount++;
+                p('     ' + setVarCount + '. ' + (grSetVars.getValue('question_text') || grSetVars.getValue('name') || ''));
+                p('        Name: ' + (grSetVars.getValue('name') || ''));
+                p('        Type: ' + grSetVars.getDisplayValue('type'));
+                if (isTrue(grSetVars, 'mandatory')) p('        Mandatory: true');
+                if (isTrue(grSetVars, 'read_only')) p('        Read only: true');
+                if (grSetVars.getValue('default_value')) p('        Default: ' + grSetVars.getValue('default_value'));
+                if (grSetVars.getValue('reference')) p('        Reference: ' + grSetVars.getValue('reference'));
+            }
+            if (setVarCount === 0) p('     (no variables in this set)');
+            p('');
+        }
+        if (setCount === 0) p('  (no variable sets found)');
+
+        // ── UI Policies (catalog_ui_policy) ──────────────────────
+
+        // catalog_ui_policy_action.catalog_variable holds 'IO:<sys_id>' rather than the variable name
+        function resolveVarName(rawVal) {
+            if (!rawVal) return '';
+            var id = rawVal.indexOf('IO:') === 0 ? rawVal.substring(3) : rawVal;
+            var grIo = new GlideRecord('item_option_new');
+            if (!grIo.get(id)) return rawVal;
+            var label = grIo.getValue('question_text') || '';
+            var nm = grIo.getValue('name') || '';
+            var out = nm || id;
+            if (label) out += ' (' + label + ')';
+            if (isTrue(grIo, 'mandatory')) out += ' [variable-level Mandatory: true]';
+            return out;
+        }
+
+        function printAppliesOn(gr) {
+            p('     Applies on Catalog Item view: ' + isTrue(gr, 'applies_catalog'));
+            p('     Applies on Requested Items: ' + isTrue(gr, 'applies_req_item'));
+            p('     Applies on Catalog Tasks: ' + isTrue(gr, 'applies_sc_task'));
+            p('     Applies on Target Record: ' + isTrue(gr, 'applies_target_record'));
+        }
+
+        p(subsection('UI POLICIES'));
+        var grUip = new GlideRecord('catalog_ui_policy');
+        grUip.addQuery('catalog_item', catItemSysId);
+        grUip.orderBy('order');
+        grUip.query();
+        var uipCount = 0;
+        while (grUip.next()) {
+            uipCount++;
+            var uipSysId = grUip.getUniqueValue();
+            p('  ' + uipCount + '. ' + (grUip.getValue('short_description') || '(unnamed)'));
+            p('     sys_id: ' + uipSysId);
+            p('     Active: ' + grUip.getValue('active'));
+            p('     Order: ' + (grUip.getValue('order') || ''));
+            p('     Applies to: ' + (grUip.getDisplayValue('applies_to') || 'item'));
+            printAppliesOn(grUip);
+            if (isTrue(grUip, 'on_load')) p('     On load: true');
+            if (isTrue(grUip, 'reverse_if_false')) p('     Reverse if false: true');
+            if (isTrue(grUip, 'global')) p('     Global: true');
+            if (grUip.getValue('catalog_conditions')) p('     Conditions: ' + grUip.getValue('catalog_conditions'));
+            if (grUip.getValue('applies_to_set')) p('     Variable set: ' + grUip.getDisplayValue('applies_to_set'));
+
+            // Script (if run scripts is enabled)
+            if (isTrue(grUip, 'run_scripts')) {
+                if (grUip.getValue('script_true')) {
+                    p('     EXECUTE IF TRUE:');
+                    p('     ---- SCRIPT START ----');
+                    p(grUip.getValue('script_true'));
+                    p('     ---- SCRIPT END ----');
+                }
+                if (grUip.getValue('script_false')) {
+                    p('     EXECUTE IF FALSE:');
+                    p('     ---- SCRIPT START ----');
+                    p(grUip.getValue('script_false'));
+                    p('     ---- SCRIPT END ----');
+                }
+            }
+
+            // UI Policy Actions
+            var grUipa = new GlideRecord('catalog_ui_policy_action');
+            grUipa.addQuery('ui_policy', uipSysId);
+            grUipa.query();
+            var actionCount = 0;
+            while (grUipa.next()) {
+                actionCount++;
+                var varName = resolveVarName(grUipa.getValue('catalog_variable'));
+                p('     Action ' + actionCount + ': Variable: ' + varName);
+                if (grUipa.getValue('mandatory') && grUipa.getValue('mandatory') !== 'leave_alone') {
+                    p('       Mandatory: ' + grUipa.getValue('mandatory'));
+                }
+                if (grUipa.getValue('visible') && grUipa.getValue('visible') !== 'leave_alone') {
+                    p('       Visible: ' + grUipa.getValue('visible'));
+                }
+                if (grUipa.getValue('read_only') && grUipa.getValue('read_only') !== 'leave_alone') {
+                    p('       Read only: ' + grUipa.getValue('read_only'));
+                }
+                if (grUipa.getValue('disabled') && grUipa.getValue('disabled') !== 'leave_alone') {
+                    p('       Disabled: ' + grUipa.getValue('disabled'));
+                }
+                if (isTrue(grUipa, 'cleared')) p('       Cleared: true');
+            }
+            p('');
+        }
+        if (uipCount === 0) p('  (no UI policies found)');
+
+        // ── Client Scripts (catalog_script_client) ───────────────
+        p(subsection('CLIENT SCRIPTS'));
+        var grCs = new GlideRecord('catalog_script_client');
+        grCs.addQuery('cat_item', catItemSysId);
+        grCs.orderBy('order');
+        grCs.query();
+        var csCount = 0;
+        while (grCs.next()) {
+            csCount++;
+            p('  ' + csCount + '. ' + (grCs.getValue('name') || '(unnamed)'));
+            p('     sys_id: ' + grCs.getUniqueValue());
+            p('     Active: ' + grCs.getValue('active'));
+            p('     Type: ' + (grCs.getDisplayValue('type') || grCs.getValue('type') || ''));
+            p('     Applies to: ' + (grCs.getDisplayValue('applies_to') || ''));
+            if (grCs.getValue('ui_type')) p('     UI type: ' + grCs.getDisplayValue('ui_type'));
+            if (grCs.getValue('cat_variable')) p('     Variable: ' + grCs.getDisplayValue('cat_variable'));
+            if (grCs.getValue('applies_to_set')) p('     Variable set: ' + grCs.getDisplayValue('applies_to_set'));
+            if (grCs.getValue('condition')) p('     Condition: ' + grCs.getValue('condition'));
+
+            var csScript = grCs.getValue('script') || '';
+            if (csScript) {
+                p('     ---- SCRIPT START ----');
+                p(csScript);
+                p('     ---- SCRIPT END ----');
+            }
+            p('');
+        }
+        if (csCount === 0) p('  (no client scripts found)');
+
+        // ── Also check variable-set-level client scripts ─────────
+        var grSetItem2 = new GlideRecord('io_set_item');
+        grSetItem2.addQuery('sc_cat_item', catItemSysId);
+        grSetItem2.query();
+        var vsClientScriptCount = 0;
+        while (grSetItem2.next()) {
+            var vsId = grSetItem2.getValue('variable_set');
+            if (!vsId) continue;
+            var grVsCs = new GlideRecord('catalog_script_client');
+            grVsCs.addQuery('variable_set', vsId);
+            grVsCs.addQuery('active', true);
+            grVsCs.orderBy('order');
+            grVsCs.query();
+            while (grVsCs.next()) {
+                if (vsClientScriptCount === 0) {
+                    p(subsection('CLIENT SCRIPTS (from Variable Sets)'));
+                }
+                vsClientScriptCount++;
+                p('  ' + vsClientScriptCount + '. ' + (grVsCs.getValue('name') || '(unnamed)'));
+                p('     Variable set: ' + grVsCs.getDisplayValue('variable_set'));
+                p('     Type: ' + (grVsCs.getDisplayValue('type') || grVsCs.getValue('type') || ''));
+                if (grVsCs.getValue('cat_variable')) p('     Variable: ' + grVsCs.getDisplayValue('cat_variable'));
+                var vsScript = grVsCs.getValue('script') || '';
+                if (vsScript) {
+                    p('     ---- SCRIPT START ----');
+                    p(vsScript);
+                    p('     ---- SCRIPT END ----');
+                }
+                p('');
+            }
+        }
+        if (vsClientScriptCount === 0) {
+            p(subsection('CLIENT SCRIPTS (from Variable Sets)'));
+            p('  (no variable-set client scripts found)');
+        }
+
+        // ── Also check variable-set-level UI policies ────────────
+        var grSetItem3 = new GlideRecord('io_set_item');
+        grSetItem3.addQuery('sc_cat_item', catItemSysId);
+        grSetItem3.query();
+        var vsUipCount = 0;
+        while (grSetItem3.next()) {
+            var vsId3 = grSetItem3.getValue('variable_set');
+            if (!vsId3) continue;
+            var grVsUip = new GlideRecord('catalog_ui_policy');
+            grVsUip.addQuery('variable_set', vsId3);
+            grVsUip.addQuery('active', true);
+            grVsUip.orderBy('order');
+            grVsUip.query();
+            while (grVsUip.next()) {
+                if (vsUipCount === 0) {
+                    p(subsection('UI POLICIES (from Variable Sets)'));
+                }
+                vsUipCount++;
+                var vsUipId = grVsUip.getUniqueValue();
+                p('  ' + vsUipCount + '. ' + (grVsUip.getValue('short_description') || '(unnamed)'));
+                p('     Variable set: ' + grVsUip.getDisplayValue('variable_set'));
+                printAppliesOn(grVsUip);
+                if (grVsUip.getValue('catalog_conditions')) p('     Conditions: ' + grVsUip.getValue('catalog_conditions'));
+                if (isTrue(grVsUip, 'on_load')) p('     On load: true');
+                if (isTrue(grVsUip, 'reverse_if_false')) p('     Reverse if false: true');
+                if (isTrue(grVsUip, 'run_scripts')) {
+                    if (grVsUip.getValue('script_true')) {
+                        p('     EXECUTE IF TRUE:');
+                        p('     ---- SCRIPT START ----');
+                        p(grVsUip.getValue('script_true'));
+                        p('     ---- SCRIPT END ----');
+                    }
+                    if (grVsUip.getValue('script_false')) {
+                        p('     EXECUTE IF FALSE:');
+                        p('     ---- SCRIPT START ----');
+                        p(grVsUip.getValue('script_false'));
+                        p('     ---- SCRIPT END ----');
+                    }
+                }
+                var grVsUipa = new GlideRecord('catalog_ui_policy_action');
+                grVsUipa.addQuery('ui_policy', vsUipId);
+                grVsUipa.query();
+                var vsActionCount = 0;
+                while (grVsUipa.next()) {
+                    vsActionCount++;
+                    var vsVarName = resolveVarName(grVsUipa.getValue('catalog_variable'));
+                    p('     Action ' + vsActionCount + ': Variable: ' + vsVarName);
+                    if (grVsUipa.getValue('mandatory') && grVsUipa.getValue('mandatory') !== 'leave_alone') p('       Mandatory: ' + grVsUipa.getValue('mandatory'));
+                    if (grVsUipa.getValue('visible') && grVsUipa.getValue('visible') !== 'leave_alone') p('       Visible: ' + grVsUipa.getValue('visible'));
+                    if (grVsUipa.getValue('read_only') && grVsUipa.getValue('read_only') !== 'leave_alone') p('       Read only: ' + grVsUipa.getValue('read_only'));
+                }
+                p('');
+            }
+        }
+        if (vsUipCount === 0) {
+            p(subsection('UI POLICIES (from Variable Sets)'));
+            p('  (no variable-set UI policies found)');
+        }
+
+        // ── UI Actions ───────────────────────────────────────────
+        p(subsection('UI ACTIONS'));
+        var grUia = new GlideRecord('sys_ui_action');
+        grUia.addQuery('table', 'sc_cat_item');
+        grUia.addQuery('active', true);
+        grUia.orderBy('order');
+        grUia.query();
+        var uiaCount = 0;
+        while (grUia.next()) {
+            // Only include UI actions that are relevant to this catalog item
+            var uiaCondition = grUia.getValue('condition') || '';
+            if (uiaCondition && uiaCondition.indexOf(catItemSysId) === -1 &&
+                uiaCondition.indexOf('cat_item') === -1) continue;
+            uiaCount++;
+            p('  ' + uiaCount + '. ' + (grUia.getValue('name') || '(unnamed)'));
+            p('     Active: ' + grUia.getValue('active'));
+            if (grUia.getValue('action_name')) p('     Action name: ' + grUia.getValue('action_name'));
+            if (grUia.getValue('form_button') === 'true') p('     Form button: true');
+            if (grUia.getValue('form_context_menu') === 'true') p('     Context menu: true');
+            if (grUia.getValue('form_link') === 'true') p('     Form link: true');
+            if (uiaCondition) p('     Condition: ' + uiaCondition);
+            var uiaScript = grUia.getValue('script') || '';
+            if (uiaScript) {
+                p('     ---- SCRIPT START ----');
+                p(uiaScript);
+                p('     ---- SCRIPT END ----');
+            }
+            p('');
+        }
+        if (uiaCount === 0) p('  (no relevant UI actions found)');
+
+        // ── Record Producer script (sc_cat_item_producer) ────────
+        if (grCat.getValue('sys_class_name') === 'sc_cat_item_producer') {
+            p(subsection('RECORD PRODUCER'));
+            var grProd = new GlideRecord('sc_cat_item_producer');
+            if (grProd.isValid() && grProd.get(catItemSysId)) {
+                p('  Target table: ' + (grProd.getDisplayValue('table_name') || grProd.getValue('table_name') || ''));
+                if (grProd.getValue('view_id')) p('  View: ' + grProd.getDisplayValue('view_id'));
+                if (grProd.getValue('redirect_to')) p('  Redirect to: ' + grProd.getDisplayValue('redirect_to'));
+                var prodScript = grProd.getValue('script') || '';
+                if (prodScript) {
+                    p('  ---- SCRIPT START ----');
+                    p(prodScript);
+                    p('  ---- SCRIPT END ----');
+                } else {
+                    p('  (no producer script)');
+                }
+            } else {
+                p('  (record producer record not readable)');
+            }
+        }
+
+        // ── User Criteria (Available for / Not available for) ────
+        p(subsection('USER CRITERIA'));
+        var ucTables = [
+            { table: 'sc_cat_item_user_criteria_mtom', label: 'Available for' },
+            { table: 'sc_cat_item_user_criteria_no_mtom', label: 'Not available for' }
+        ];
+        var ucTotal = 0;
+        for (var uci = 0; uci < ucTables.length; uci++) {
+            var grUcm = new GlideRecord(ucTables[uci].table);
+            if (!grUcm.isValid()) continue;
+            grUcm.addQuery('sc_cat_item', catItemSysId);
+            grUcm.query();
+            while (grUcm.next()) {
+                ucTotal++;
+                var ucId = grUcm.getValue('user_criteria');
+                p('  [' + ucTables[uci].label + '] ' + (grUcm.getDisplayValue('user_criteria') || ucId || ''));
+                var grUc = new GlideRecord('user_criteria');
+                if (ucId && grUc.isValid() && grUc.get(ucId)) {
+                    if (grUc.getValue('roles')) p('     Roles: ' + grUc.getDisplayValue('roles'));
+                    if (grUc.getValue('group')) p('     Groups: ' + grUc.getDisplayValue('group'));
+                    if (grUc.getValue('user')) p('     Users: ' + grUc.getDisplayValue('user'));
+                    if (grUc.getValue('company')) p('     Companies: ' + grUc.getDisplayValue('company'));
+                    if (grUc.getValue('department')) p('     Departments: ' + grUc.getDisplayValue('department'));
+                    if (grUc.getValue('location')) p('     Locations: ' + grUc.getDisplayValue('location'));
+                    if (grUc.getValue('match_all') === 'true') p('     Match all: true');
+                    if (grUc.getValue('advanced') === 'true' && grUc.getValue('script')) {
+                        p('     ---- SCRIPT START ----');
+                        p(grUc.getValue('script'));
+                        p('     ---- SCRIPT END ----');
+                    }
+                }
+            }
+        }
+        if (ucTotal === 0) p('  (no user criteria configured)');
+
+        // ── Execution / Delivery Plan tasks ──────────────────────
+        var catDeliveryPlanId = grCat.getValue('delivery_plan') || '';
+        if (catDeliveryPlanId) {
+            p(subsection('EXECUTION PLAN: ' + grCat.getDisplayValue('delivery_plan')));
+            var grDt = new GlideRecord('sc_cat_item_delivery_task');
+            if (grDt.isValid()) {
+                grDt.addQuery('delivery_plan', catDeliveryPlanId);
+                grDt.orderBy('order');
+                grDt.query();
+                var dtCount = 0;
+                while (grDt.next()) {
+                    dtCount++;
+                    p('  ' + dtCount + '. ' + (grDt.getValue('name') || grDt.getValue('short_description') || '(unnamed)'));
+                    p('     Order: ' + (grDt.getValue('order') || ''));
+                    if (grDt.getValue('assignment_group')) p('     Assignment group: ' + grDt.getDisplayValue('assignment_group'));
+                    if (grDt.getValue('assigned_to')) p('     Assigned to: ' + grDt.getDisplayValue('assigned_to'));
+                    if (grDt.getValue('condition')) p('     Condition: ' + grDt.getValue('condition'));
+                    if (grDt.getValue('instructions')) p('     Instructions: ' + grDt.getValue('instructions'));
+                    if (grDt.getValue('work_notes')) p('     Work notes: ' + grDt.getValue('work_notes'));
+                    p('');
+                }
+                if (dtCount === 0) p('  (no delivery tasks defined)');
+            } else {
+                p('  (sc_cat_item_delivery_task table not available)');
+            }
+        }
+
+        // Return the workflow/flow references for further extraction
+        var catWorkflowId = grCat.getValue('workflow') || '';
+        var catFlowId = grCat.getValue('flow_designer_flow') || '';
+        return { workflowId: catWorkflowId, flowId: catFlowId };
+    }
+
     // ── INC (Incident) extraction helper ─────────────────────
     //    Similar to RITM but for incident records
     function extractIncident(grInc) {
@@ -1013,10 +1556,10 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
     // ── Auto-detect sys_id type ──────────────────────────────
     //    Try RITM number/sys_id first, then INC number/sys_id,
-    //    then Flow Designer flow, then wf_context, then
-    //    wf_workflow_version, then document record.
+    //    then catalog item, then Flow Designer flow, then wf_context,
+    //    then wf_workflow_version, then document record.
 
-    var mode;          // 'definition', 'context', 'ritm', 'incident', or 'flow'
+    var mode;          // 'definition', 'context', 'ritm', 'incident', 'catitem', or 'flow'
     var wfv;           // workflow_version sys_id — used for the rest of the script
     var contextId;     // wf_context sys_id (only when mode=context)
     var contextData;   // execution metadata object (only when mode=context)
@@ -1024,6 +1567,7 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     var incContexts;   // array of {contextId, wfv} from Incident (only when mode=incident)
     var incTable;      // the incident table name (usually 'incident')
     var flowSysId;     // sys_hub_flow sys_id (only when mode=flow)
+    var catItemSysId;  // sc_cat_item sys_id (only when mode=catitem)
 
     // Try RITM number first (e.g. RITM0043257)
     var isRitmNumber = /^RITM\d+$/i.test(sysId);
@@ -1065,10 +1609,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         var ritmFlows = ritmResult.flows;
 
         if (ritmContexts.length === 0 && ritmFlows.length === 0) {
-            p(ln('=', 80));
-            p('EXPORT COMPLETE — no workflow contexts or Flow Designer flows found for this RITM.');
-            p(ln('=', 80));
-            return;
+            p('\nNOTE: no workflow contexts or Flow Designer runs found for this RITM.');
+            p('Continuing with catalog item, business rule, and notification analysis.');
         }
 
         // Set up for multi-context extraction below
@@ -1124,6 +1666,28 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
         // Set up for multi-context extraction below
         // We'll iterate through all contexts after the function definition
+    }
+
+    // Try sc_cat_item sys_id
+    if (!mode) {
+        var grCatItemCheck = new GlideRecord('sc_cat_item');
+        if (grCatItemCheck.get(sysId)) {
+            mode = 'catitem';
+            catItemSysId = sysId;
+            p('NOTE: Input matched sc_cat_item sys_id — ' + grCatItemCheck.getValue('name'));
+        }
+    }
+
+    // Handle catalog item mode
+    if (mode === 'catitem') {
+        var ts = new GlideDateTime().toString();
+        p(ln('=', 80));
+        p('SERVICENOW CATALOG ITEM EXPORT');
+        p('Extracted: ' + ts);
+        p('Detected type: Catalog Item (sc_cat_item)');
+        p(ln('=', 80));
+
+        var catResult = extractCatalogItem(catItemSysId);
     }
 
     // Try sys_hub_flow (Flow Designer) by sys_id or by name
@@ -1231,8 +1795,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
     }  // end if (!mode) — wf_context branch
 
-    // For non-RITM, non-incident, non-flow modes, print the header here
-    if (mode !== 'ritm' && mode !== 'incident' && mode !== 'flow') {
+    // For non-RITM, non-incident, non-flow, non-catitem modes, print the header here
+    if (mode !== 'ritm' && mode !== 'incident' && mode !== 'flow' && mode !== 'catitem') {
     var ts = new GlideDateTime().toString();
     p(ln('=', 80));
     if (mode === 'context') {
@@ -2582,6 +3146,48 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
     }  // end extractWorkflow()
 
+    // ── Extract the workflow / flow a catalog item is wired to ──
+    //    Skipped automatically if the same workflow/flow was already
+    //    extracted from an execution context (visited* guards).
+
+    function extractCatalogItemAutomation(catRes) {
+        if (!catRes) return;
+        if (catRes.workflowId) {
+            var catWfvId = '';
+            var grCatWfv = new GlideRecord('wf_workflow_version');
+            grCatWfv.addQuery('workflow', catRes.workflowId);
+            grCatWfv.addQuery('published', true);
+            grCatWfv.setLimit(1);
+            grCatWfv.query();
+            if (grCatWfv.next()) {
+                catWfvId = grCatWfv.getUniqueValue();
+            } else {
+                var grCatWfv2 = new GlideRecord('wf_workflow_version');
+                grCatWfv2.addQuery('workflow', catRes.workflowId);
+                grCatWfv2.orderByDesc('sys_updated_on');
+                grCatWfv2.setLimit(1);
+                grCatWfv2.query();
+                if (grCatWfv2.next()) catWfvId = grCatWfv2.getUniqueValue();
+            }
+            if (catWfvId && !visitedWorkflows[catWfvId]) {
+                p('\n' + ln('#', 80));
+                p('WORKFLOW DEFINITION FOR CATALOG ITEM');
+                p(ln('#', 80));
+                extractWorkflow(catWfvId, null, 0);
+            }
+        }
+        if (catRes.flowId && !visitedFlows[catRes.flowId]) {
+            p('\n' + ln('#', 80));
+            p('FLOW DESIGNER FLOW FOR CATALOG ITEM');
+            p(ln('#', 80));
+            extractFlowDesigner(catRes.flowId, 0);
+        }
+        if (!catRes.workflowId && !catRes.flowId) {
+            p('\n(No workflow or Flow Designer flow directly associated with this catalog item)');
+            p('(The item may use an execution plan / delivery plan instead)');
+        }
+    }
+
     // ── Run the extraction ────────────────────────────────────
 
     if (mode === 'flow') {
@@ -2595,6 +3201,16 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         p(ln('=', 80));
         extractFlowDesigner(flowSysId, 0);
     } else if (mode === 'ritm') {
+        // Extract catalog item definition for the RITM
+        var ritmCatResult = null;
+        var grRitmForCat = new GlideRecord('sc_req_item');
+        if (grRitmForCat.get(grRitmRef.getUniqueValue())) {
+            var ritmCatItemId = grRitmForCat.getValue('cat_item');
+            if (ritmCatItemId) {
+                ritmCatResult = extractCatalogItem(ritmCatItemId);
+            }
+        }
+
         // Extract business rules, notifications, email actions, and emails for RITM
         var grRitmForEmail = new GlideRecord('sc_req_item');
         if (grRitmForEmail.get(grRitmRef.getUniqueValue())) {
@@ -2628,6 +3244,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 extractFlowDesigner(rfId, 0);
             }
         }
+        // Catalog item's configured workflow/flow — covers items whose
+        // automation never produced a runtime context for this RITM.
+        extractCatalogItemAutomation(ritmCatResult);
     } else if (mode === 'incident') {
         // Extract business rules, notifications, email actions, and emails for Incident
         var grIncForEmail = new GlideRecord('incident');
@@ -2648,6 +3267,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             p(ln('#', 80));
             extractWorkflow(iCtx.wfv, iCtx.contextId, 0);
         }
+    } else if (mode === 'catitem') {
+        extractCatalogItemAutomation(catResult);
     } else {
         // Single workflow extraction (definition or context mode)
         extractWorkflow(wfv, contextId, 0);
@@ -2663,10 +3284,13 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         var flowCount = (ritmFlows && ritmFlows.length) || 0;
         p('Type: RITM (sc_req_item) with ' + ritmContexts.length + ' workflow context(s)' +
           (flowCount > 0 ? ' and ' + flowCount + ' Flow Designer flow(s)' : ''));
-        p('Included analysis: Business Rules, Inbound Email Actions, Notifications, Email Scripts, Email Correlation');
+        p('Included analysis: Catalog Item (variables, variable sets, UI policies, client scripts, user criteria, execution plan, workflow/flow), Business Rules, Inbound Email Actions, Notifications, Email Scripts, Email Correlation');
     } else if (mode === 'incident') {
         p('Type: Incident with ' + incContexts.length + ' workflow context(s)');
         p('Included analysis: Business Rules, Inbound Email Actions, Notifications, Email Scripts, Email Correlation');
+    } else if (mode === 'catitem') {
+        p('Type: Catalog Item (sc_cat_item)');
+        p('Included analysis: Variables, Variable Sets, UI Policies, Client Scripts, UI Actions, Record Producer, User Criteria, Execution Plan, Workflow/Flow');
     } else {
         p('Type: ' + (mode === 'context' ? 'Executed workflow (wf_context)' : 'Workflow definition (wf_workflow_version)'));
     }
