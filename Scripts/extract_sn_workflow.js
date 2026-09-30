@@ -42,7 +42,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
  *           When a traditional workflow calls a Flow Designer flow
  *           (via "Flow Logic" activity), the flow is extracted inline.
  *           For RITMs and Incidents: record details, variables, activity
- *           log / journal, approval history, all associated workflow
+ *           log / journal, field change history (audit), approval history,
+ *           all associated workflow
  *           contexts, business rules, inbound email actions, notification
  *           definitions, email scripts/templates, and email correlation
  *           analysis (showing which notifications/rules triggered emails).
@@ -82,6 +83,62 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     }
     function restoreDebug() {
         try { if (_savedDebug) GlideSession.get().setDebug(true); } catch(e) {}
+    }
+
+    // ── Field change history (audit) ─────────────────────────
+    //    The journal only holds work_notes/comments/approval_history.
+    //    Field-level changes (State, Approval, Closed by, etc.) live in
+    //    sys_audit and are what powers the "Field changes" entries in the
+    //    activity stream. Without this, rejections/closures are invisible.
+    function printFieldChangeHistory(tableName, docSysId) {
+        p(subsection('FIELD CHANGE HISTORY (AUDIT)'));
+
+        // Reusable record for resolving field labels and display values.
+        var descGr = new GlideRecord(tableName);
+        descGr.initialize();
+
+        function labelFor(fieldName) {
+            try {
+                var el = descGr.getElement(fieldName);
+                if (el) { var lbl = el.getLabel(); if (lbl) return lbl; }
+            } catch (e) {}
+            return fieldName;
+        }
+        function dispFor(fieldName, raw) {
+            if (raw === '' || raw == null) return '(empty)';
+            try {
+                var el = descGr.getElement(fieldName);
+                if (el) {
+                    descGr.setValue(fieldName, raw);
+                    var dv = descGr.getDisplayValue(fieldName);
+                    if (dv && dv !== raw) return dv;
+                }
+            } catch (e) {}
+            return raw;
+        }
+
+        var grAudit = new GlideRecord('sys_audit');
+        grAudit.addQuery('documentkey', docSysId);
+        grAudit.orderBy('sys_created_on');
+        grAudit.query();
+
+        var lastKey = null;
+        var auditCount = 0;
+        while (grAudit.next()) {
+            var aCreated = grAudit.getValue('sys_created_on') || '';
+            var aUser = grAudit.getValue('sys_created_by') || grAudit.getValue('user') || '';
+            var aField = grAudit.getValue('fieldname') || '';
+            var aOld = grAudit.getValue('oldvalue');
+            var aNew = grAudit.getValue('newvalue');
+            var key = aCreated + '|' + aUser;
+            if (key !== lastKey) {
+                p('\n[' + aCreated + '] (' + aUser + ')');
+                lastKey = key;
+            }
+            p('    ' + labelFor(aField) + ': ' + dispFor(aField, aOld) + ' -> ' + dispFor(aField, aNew));
+            auditCount++;
+        }
+        if (auditCount === 0) p('  (no field change history found — auditing may be disabled for ' + tableName + ')');
     }
 
     // ── Validate ─────────────────────────────────────────────
@@ -208,6 +265,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             journalCount++;
         }
         if (journalCount === 0) p('  (no journal entries found)');
+
+        // ── Field change history (audit) ──────────────────────────
+        printFieldChangeHistory('sc_req_item', ritmSysId);
 
         // ── Approval history ─────────────────────────────────────
         p(subsection('APPROVAL HISTORY'));
@@ -870,6 +930,9 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
             journalCount++;
         }
         if (journalCount === 0) p('  (no journal entries found)');
+
+        // ── Field change history (audit) ──────────────────────────
+        printFieldChangeHistory('incident', incSysId);
 
         // ── Approval history ─────────────────────────────────────
         p(subsection('APPROVAL HISTORY'));
