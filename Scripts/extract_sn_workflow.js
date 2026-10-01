@@ -34,6 +34,13 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
  *           Create Task config, and all other activity configuration.
  *           Orchestration scripts (PowerShell/SSH/etc from sa_step)
  *           that run on the MID Server are included per activity.
+ *           Custom / orchestration activity types (e.g. "Deprovision") also
+ *           dump their full wf_activity_definition — execution command, script,
+ *           template, and other config fields — so their execution logic is
+ *           never lost. Modern Action-Designer activities stored in
+ *           wf_element_activity are resolved via sys_metadata and their embedded
+ *           PowerShell/command payload, input/output transforms and process
+ *           scripts are dumped in full.
  *           For executed workflows: execution state, timing, activity
  *           results, faults, scratchpad, and the triggering record.
  *           Sub-workflows called by "Workflow" activities are extracted
@@ -82,6 +89,164 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
     function isTrue(gr, field) {
         var v = gr.getValue(field);
         return v === 'true' || v === '1';
+    }
+
+    // Decide whether a wf_activity_definition field should be skipped when
+    // dumping a custom activity's full definition.
+    function adDefSkip(fieldName, skipMap) {
+        if (skipMap[fieldName]) return true;
+        // Skip anything that is clearly sys/audit metadata.
+        if (fieldName.indexOf('sys_') === 0) return true;
+        return false;
+    }
+
+    // Base platform activity types already have their config captured via
+    // sys_variable_value; their definitions are large reusable templates we
+    // don't want to dump. Everything else is treated as a custom activity
+    // (e.g. Orchestration activities like "Deprovision") whose definition holds
+    // the actual execution command / script.
+    var BASE_ACTIVITY_TYPES = {
+        'begin': 1, 'end': 1, 'if': 1, 'switch': 1, 'join': 1, 'branch': 1,
+        'set values': 1, 'run script': 1, 'timer': 1, 'log message': 1,
+        'wait for condition': 1, 'wait for wf event': 1, 'create task': 1,
+        'catalog task': 1, 'approval - user': 1, 'approval - group': 1,
+        'approval coordinator': 1, 'manual approval': 1, 'notification': 1,
+        'rollback to': 1, 'return value': 1, 'lock': 1, 'workflow': 1,
+        'subflow': 1, 'run subflow': 1, 'flow logic': 1, 'end error handler': 1
+    };
+    function isCustomActivityType(typeName) {
+        if (!typeName) return false;
+        return !BASE_ACTIVITY_TYPES[('' + typeName).trim().toLowerCase()];
+    }
+
+    // Fields on wf_activity_definition that are boilerplate/noise — skip them
+    // when dumping a custom activity's full definition.
+    var ACT_DEF_SKIP_FIELDS = {
+        sys_id: 1, sys_created_by: 1, sys_created_on: 1, sys_updated_by: 1,
+        sys_updated_on: 1, sys_mod_count: 1, sys_tags: 1, sys_policy: 1,
+        sys_domain: 1, sys_domain_path: 1, sys_scope: 1, sys_update_name: 1,
+        sys_package: 1, sys_class_name: 1, sys_customer_update: 1,
+        sys_replace_on_upgrade: 1, order: 1, active: 1, icon: 1, image: 1,
+        width: 1, height: 1, roles: 1
+    };
+
+    // Read every non-empty, non-boilerplate field from a wf_activity_definition
+    // GlideRecord so custom orchestration activities expose their execution
+    // command / script / template. Returns {name, fields:[{name,label,value,display}]}.
+    function readActivityDef(gr) {
+        var defName = gr.getDisplayValue('name') || gr.getValue('name') || '';
+        var defFields = [];
+        var allFields = gr.getFields();
+        for (var f = 0; f < allFields.size(); f++) {
+            var el = allFields.get(f);
+            var fName = el.getName();
+            if (adDefSkip(fName, ACT_DEF_SKIP_FIELDS)) continue;
+            var raw = gr.getValue(fName) || '';
+            if (!raw && raw !== '0') continue;
+            var disp = gr.getDisplayValue(fName) || '';
+            defFields.push({
+                name:  fName,
+                label: el.getLabel() || fName,
+                value: raw,
+                display: (disp && disp !== raw) ? disp : ''
+            });
+        }
+        return { name: defName, fields: defFields };
+    }
+
+    // Order activity-definition fields so the execution-critical ones (name,
+    // category, the PowerShell/command payload, scripts) appear first.
+    function sortActivityDefFields(fields) {
+        var priority = {
+            name: 1, category: 2, short_description: 3, description: 4,
+            input_transform: 5, command: 6, script: 7,
+            output_process_script: 8, input_meta: 9, output_meta: 10,
+            output_transform: 11, base_provider: 12
+        };
+        var indexed = [];
+        for (var i = 0; i < fields.length; i++) {
+            indexed.push({ f: fields[i], i: i });
+        }
+        indexed.sort(function (a, b) {
+            var pa = priority[a.f.name] || 50;
+            var pb = priority[b.f.name] || 50;
+            if (pa !== pb) return pa - pb;
+            return a.i - b.i;  // stable
+        });
+        var out = [];
+        for (var k = 0; k < indexed.length; k++) out.push(indexed[k].f);
+        return out;
+    }
+
+    // Resolve a wf_activity_definition for a custom activity, trying several
+    // strategies because published workflows often reference activity_definition
+    // sys_ids that were re-created (new sys_id) on upgrade, and custom activity
+    // names may carry leading/trailing spaces or suffixes.
+    // Returns {details, resolvedSysId, method} or null.
+    function resolveActivityDefinition(actdefSysId, typeName) {
+        // 1) direct get by the referenced sys_id
+        if (actdefSysId) {
+            var grId = new GlideRecord('wf_activity_definition');
+            if (grId.get(actdefSysId)) {
+                return { details: readActivityDef(grId), resolvedSysId: grId.getUniqueValue(), method: 'sys_id' };
+            }
+        }
+
+        var raw = ('' + (typeName || ''));
+        var trimmed = raw.trim();
+        if (!trimmed) return null;
+
+        // 2) name matches, most specific first. ServiceNow string queries are
+        //    case-insensitive; '=' still requires exact (incl. spaces), so also
+        //    try the raw value, then STARTSWITH, then CONTAINS.
+        var attempts = [
+            { op: '=',          val: trimmed, label: 'name=' },
+            { op: '=',          val: raw,     label: 'name= (raw)' },
+            { op: 'STARTSWITH', val: trimmed, label: 'name STARTSWITH' },
+            { op: 'CONTAINS',   val: trimmed, label: 'name CONTAINS' }
+        ];
+        for (var a = 0; a < attempts.length; a++) {
+            if (attempts[a].val === raw && attempts[a].op === '=' && raw === trimmed) continue;
+            if (attempts[a].op === 'CONTAINS' && trimmed.length < 4) continue;
+            var grN = new GlideRecord('wf_activity_definition');
+            grN.addQuery('name', attempts[a].op, attempts[a].val);
+            grN.orderByDesc('sys_updated_on');
+            grN.setLimit(1);
+            grN.query();
+            if (grN.next()) {
+                return { details: readActivityDef(grN), resolvedSysId: grN.getUniqueValue(), method: attempts[a].label + '"' + attempts[a].val + '"' };
+            }
+        }
+
+        // 3) Last resort: the referenced sys_id may point to a record in another
+        //    metadata table (custom activity stored elsewhere, or a scoped table).
+        //    sys_metadata spans every metadata table — use it to find the real
+        //    class, then dump the record generically from that table.
+        if (actdefSysId) {
+            var grMeta = new GlideRecord('sys_metadata');
+            if (grMeta.get(actdefSysId)) {
+                var realClass = grMeta.getValue('sys_class_name') || '';
+                if (realClass && realClass !== 'wf_activity_definition') {
+                    var grReal = new GlideRecord(realClass);
+                    if (grReal.get(actdefSysId)) {
+                        return {
+                            details: readActivityDef(grReal),
+                            resolvedSysId: actdefSysId,
+                            method: 'sys_metadata → table ' + realClass
+                        };
+                    }
+                }
+                // Found in sys_metadata but we couldn't read the concrete row.
+                return {
+                    details: null,
+                    resolvedSysId: actdefSysId,
+                    metaClass: realClass,
+                    metaName: grMeta.getValue('sys_name') || '',
+                    method: 'sys_metadata (class ' + realClass + ')'
+                };
+            }
+        }
+        return null;
     }
 
     // sys_email is a rotated/partitioned table in SN. Queries against it
@@ -2730,6 +2895,11 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
 
     var orchScriptsByActivity = {};  // keyed by wf_activity sys_id
 
+    // Full definition details of custom activities, keyed by activity_definition
+    // sys_id. Populated below so the activity-details loop can print the actual
+    // execution command / script / template of custom orchestration activities.
+    var activityDefDetailsByActDef = {};
+
     // Collect unique activity_definition sys_ids
     var actDefIds = [];
     var actDefToActivities = {};  // actdef sys_id → [activity sys_ids]
@@ -2771,6 +2941,10 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
         }
 
         // Check wf_activity_definition for MID server / credential alias / category
+        // and capture the FULL definition of custom activities (script, template,
+        // execution command, input/output variables) so custom orchestration
+        // activities like "Deprovision" expose their actual execution logic.
+
         for (var adbi = 0; adbi < actDefIds.length; adbi += batchSize) {
             var adBatch = actDefIds.slice(adbi, adbi + batchSize);
             var grActDef = new GlideRecord('wf_activity_definition');
@@ -2788,6 +2962,8 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                     existingMeta.credential = grActDef.getDisplayValue('credential') || grActDef.getValue('credential') || '';
                 }
                 existingMeta.category = grActDef.getDisplayValue('category') || '';
+
+                activityDefDetailsByActDef[adId] = readActivityDef(grActDef);
             }
         }
 
@@ -2952,6 +3128,68 @@ var SYS_ID = 'PUT_YOUR_SYS_ID_HERE';
                 if (orchMeta.midServer) p('  MID Server: ' + orchMeta.midServer);
                 if (orchMeta.credential) p('  Credential: ' + orchMeta.credential);
                 if (orchMeta.category) p('  Category: ' + orchMeta.category);
+            }
+        }
+
+        // Custom activity definition (execution command / script / template).
+        // Only meaningful for custom / orchestration activity types — the base
+        // platform activities (If, Set Values, Run Script, Timer, etc.) already
+        // have their config in sys_variable_value above, so skip those to avoid
+        // dumping large platform templates.
+        if (isCustomActivityType(info.type)) {
+            var defDetails = activityDefDetailsByActDef[info.actdef];
+            var defResolvedSysId = info.actdef;
+            var defMethod = 'batch cache';
+
+            // Fallback: the batch lookup can miss the definition when the
+            // published workflow references an activity_definition that has since
+            // been re-versioned (dangling reference). Try sys_id, then name.
+            var resolved = null;
+            if (!defDetails || defDetails.fields.length === 0) {
+                resolved = resolveActivityDefinition(info.actdef, info.type);
+                if (resolved && resolved.details) {
+                    defDetails = resolved.details;
+                    defResolvedSysId = resolved.resolvedSysId;
+                    defMethod = resolved.method;
+                }
+            }
+
+            if (defDetails && defDetails.fields.length > 0) {
+                p('\nCUSTOM ACTIVITY DEFINITION: ' + (defDetails.name || info.type));
+                p('  referenced activity_definition sys_id: ' + (info.actdef || '(none)'));
+                if (defMethod && defMethod.indexOf('sys_metadata') !== -1) {
+                    p('  (resolved via ' + defMethod + ')');
+                } else if (defResolvedSysId && defResolvedSysId !== info.actdef) {
+                    p('  (referenced record not found — resolved via ' + defMethod +
+                      ' to sys_id ' + defResolvedSysId + ')');
+                }
+                var orderedFields = sortActivityDefFields(defDetails.fields);
+                for (var ddi = 0; ddi < orderedFields.length; ddi++) {
+                    var ddf = orderedFields[ddi];
+                    var ddVal = ddf.value;
+                    var isLong = ddVal.length > 80 || ddVal.indexOf('\n') !== -1;
+                    if (isLong) {
+                        p('\n  ' + ddf.label.toUpperCase() + ' (' + ddf.name + '):');
+                        p(ddVal);
+                    } else {
+                        var suffix = ddf.display ? '  [' + ddf.display + ']' : '';
+                        p('  ' + ddf.label + ' (' + ddf.name + '): ' + ddVal + suffix);
+                    }
+                }
+            } else if (resolved && resolved.metaClass) {
+                // Found in sys_metadata but the concrete row was unreadable.
+                p('\nCUSTOM ACTIVITY DEFINITION: (referenced record exists but is not readable here)');
+                p('  referenced activity_definition sys_id: ' + (info.actdef || '(none)'));
+                p('  Lives in table: ' + resolved.metaClass +
+                  (resolved.metaName ? ' (name: ' + resolved.metaName + ')' : ''));
+                p('  Likely a scoped/protected record — extract it directly from that table.');
+            } else {
+                p('\nCUSTOM ACTIVITY DEFINITION: (could not resolve)');
+                p('  referenced activity_definition sys_id: ' + (info.actdef || '(none)') +
+                  ' — not found in wf_activity_definition (by sys_id or name "' +
+                  ('' + (info.type || '')).trim() + '") nor in sys_metadata.');
+                p('  This custom activity definition was deleted after the workflow was published;');
+                p('  its execution logic is only recoverable from a runtime wf_context/wf_history.');
             }
         }
 
